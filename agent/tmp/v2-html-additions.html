@@ -1,0 +1,56 @@
+<!-- ═══════════════════════════════════════════════════════
+     HTML elements from v2 that pipeline-explorer.html is MISSING
+     ═══════════════════════════════════════════════════════ -->
+
+<!-- 1. VIEW TOGGLE: Add "Canvas" button between List and Diagram -->
+<button class="view-btn active" id="viewList" onclick="setView('list')">List</button>
+<button class="view-btn" id="viewCanvas" onclick="setView('canvas')">Canvas</button>
+<button class="view-btn" id="viewDiagram" onclick="setView('diagram')">Diagram</button>
+
+<!-- 2. DIAGRAM WRAP: Replace current simple canvas-wrap with SVG diagram structure -->
+<div class="diagram-wrap" id="diagramWrap">
+  <!-- Canvas sub-view (existing phase-band layout) -->
+  <div class="canvas-wrap" id="canvasWrap" style="display:none"></div>
+  <!-- Diagram sub-view (new SVG node graph) -->
+  <div class="diagram-canvas" id="diagramCanvas" style="display:none">
+    <svg class="diagram-svg" id="diagramSvg"></svg>
+    <div class="diagram-nodes" id="diagramNodes"></div>
+  </div>
+  <!-- Floating detail panel (used in both canvas and diagram modes) -->
+  <div class="diagram-detail-float" id="diagramDetail"></div>
+</div>
+
+<!-- 3. ZOOM CONTROLS (fixed position, shown only in diagram mode) -->
+<div class="zoom-controls" id="zoomControls">
+  <button class="zoom-btn" onclick="zoomDiagram(-0.1)" title="Zoom out">&#8722;</button>
+  <span class="zoom-level" id="zoomLevel">100%</span>
+  <button class="zoom-btn" onclick="zoomDiagram(0.1)" title="Zoom in">+</button>
+  <button class="zoom-btn" onclick="zoomDiagram(0)" title="Fit to view" style="font-size:12px">Fit</button>
+</div>
+
+<!-- 4. EDGE TOOLTIP (positioned on SVG edge hover) -->
+<div id="edgeTooltip" class="edge-tooltip"></div>
+
+<!-- 5. PROMPT BAR: Use v2's class names (promptOutputBar, promptOutput) -->
+<div class="prompt-output" id="promptOutputBar">
+  <button class="minimize-btn" id="minimizeBtn" onclick="togglePromptBar()" title="Minimize">&#9662;</button>
+  <div class="prompt-output-text" id="promptOutput">Select a step to see its full markdown spec.</div>
+  <button class="view-all-btn" onclick="showAllMarkdown()">View All</button>
+  <button class="copy-btn" id="copyBtn" onclick="copyPrompt()">Copy Markdown</button>
+</div>
+
+<!-- 6. MODAL: Use v2's class names (md-modal-overlay, etc.) -->
+<div class="md-modal-overlay" id="mdModalOverlay" onclick="if(event.target===this)hideAllMarkdown()">
+  <div class="md-modal">
+    <div class="md-modal-header">
+      <h3>Full Pipeline Markdown</h3>
+      <div class="md-modal-actions">
+        <button class="copy-btn" id="copyAllBtn" onclick="copyAllMarkdown()">Copy Markdown</button>
+        <button class="md-modal-close" onclick="hideAllMarkdown()" title="Close">&times;</button>
+      </div>
+    </div>
+    <div class="md-modal-body">
+      <pre id="mdModalContent"></pre>
+    </div>
+  </div>
+</div>

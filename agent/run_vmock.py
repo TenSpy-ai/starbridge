@@ -54,7 +54,10 @@ def main():
     print(f"  Validation:     {'PASS' if validation.get('passed') else 'FAIL'}")
     if validation.get("issues"):
         for issue in validation["issues"]:
-            print(f"    - {issue}")
+            print(f"    FAIL: {issue}")
+    if validation.get("warnings"):
+        for w in validation["warnings"]:
+            print(f"    WARN: {w}")
 
     # Print report markdown
     report = result.get("report_markdown")

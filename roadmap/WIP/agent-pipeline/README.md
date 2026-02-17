@@ -62,17 +62,17 @@ All branches launch after s5 completes. s9 and s10 have internal data dependenci
 
 ### Step Types
 
-Each step in the playground is tagged with a type badge:
+Each step in the explorer is tagged with a type badge:
 
 | Badge | Meaning | Steps |
 |---|---|---|
 | `source` | Webhook entry point | s0 |
 | `validate` | Field validation / report QA | s1, s14 |
 | `sqlite` | SQLite read/write | s1, s5, s16 |
-| `llm` | LLM generation | s2, s4, s8, s9, s10, s11, s14 |
+| `claude` | Claude CLI sub-agent call | s2, s9, s10, s14 |
 | `tool` | Starbridge/Supabase API calls | s3a, s3b, s3c, s6, s7, s15 |
-| `template` | Deterministic template fill | s12 |
-| `logic` | Code-only (concat, cleanup, webhook) | s4, s13, s16 |
+| `template` | Deterministic template fill | s8, s11, s12 |
+| `python` | Code-only (scoring, concat, parse) | s0, s4, s13 |
 
 ## SQLite Schema
 
@@ -81,17 +81,50 @@ The pipeline uses a local SQLite database to cache discovery results and enable 
 - **`runs`** — One row per pipeline execution. Stores raw discovery JSON, selection results, generated sections, final report markdown, and Notion URL.
 - **`discoveries`** — Cached buyer/signal insights from prior runs (ranked results from s4).
 - **`contacts`** — Contact data per buyer per run.
+- **`audit_log`** — Step-level execution trace. Each step logs status, duration, and optional message/metadata via `StepTimer` context manager.
 
 s1 reads prior runs for the same domain. s5 persists discovery data. s16 saves the final report and all generated sections.
 
-## How to Use the Playground
+## Pipeline Explorer
 
-1. Open `intel-report-workflow-v2.html` in any browser — no build step, no server
-2. **List view** (default): click a step to see its full detail panel (prompt, inputs/outputs, schema, quality rules, edge cases)
-3. **Diagram view**: toggle at top — node graph with data flow arrows and parallel group boundaries
-4. **View All**: button in bottom bar — full markdown export of all 19 steps
-5. **Copy Markdown**: copies the selected step's full spec to clipboard
-6. Edit any prompt in the detail panel — bottom bar markdown updates instantly
+The pipeline explorer (`agent/pipeline-explorer.html`) has 3 view modes: **List**, **Diagram**, **Monitor**.
+
+### List + Diagram Views (static — no server needed)
+Open `pipeline-explorer.html` directly in a browser.
+1. **List view** (default): click a step to see its full detail panel (prompt, inputs/outputs, schema, quality rules, edge cases)
+2. **Diagram view**: node graph with data flow arrows, parallel group boundaries (teal), and sequential chains (pink)
+3. **View All**: button in bottom bar — full markdown export of all 19 steps
+4. **Copy Markdown**: copies the selected step's full spec to clipboard
+5. Edit any prompt in the detail panel — bottom bar markdown updates instantly
+
+Step indicators in list/diagram nodes: service tag (LLM/SB/Notion/DB), timeout, tool count (teal). Runtime status (failed/warning) appears only in the Monitor view.
+
+### Monitor View (live execution — requires server)
+
+The Monitor view provides a live dashboard for running and observing pipeline executions.
+
+**Start the server:**
+```bash
+cd /Users/oliviagao/project/starbridge
+python -m agent.server
+# Open http://127.0.0.1:8111
+```
+
+**Features:**
+- **Starting Point Form** — fill in webhook fields (target_company, target_domain, product_description, etc.) or use the VMock preset for one-click testing
+- **Step Progress Tracker** — 19 steps grouped by phase with live status indicators (pending/running/completed/failed). Running state is inferred from audit_log entries.
+- **Data Viewer** — 4 tabs: Run metadata, Discoveries, Contacts, Audit Log
+- **Past Runs** — dropdown to load and inspect any previous pipeline execution
+
+**Server endpoints** (`agent/server.py`):
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `GET /` | GET | Serve pipeline-explorer.html |
+| `POST /api/run` | POST | Launch pipeline in background thread, return run_id |
+| `GET /api/status/{run_id}` | GET | Poll target — run metadata + audit_log |
+| `GET /api/runs` | GET | List recent runs for dropdown |
+| `GET /api/data/{run_id}/{table}` | GET | Detailed data (discoveries/contacts/audit_log/run) |
 
 ## Key Architecture Decisions
 

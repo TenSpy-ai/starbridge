@@ -1,0 +1,89 @@
+/* ═══════════════════════════════════════════════════════
+   CSS from v2 that pipeline-explorer.html is MISSING
+   Copy these into the target file's <style> block
+   ═══════════════════════════════════════════════════════ */
+
+/* --- :root additions --- */
+/* Add to :root:  --pink: #f778ba;  --tool: #1a3a2a; --tool-border: #238636;  */
+
+/* --- Diagram canvas (SVG layer) --- */
+.diagram-canvas { transform-origin: 0 0; transition: transform 0.15s ease; }
+.diagram-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; }
+.diagram-nodes { position: absolute; top: 0; left: 0; z-index: 2; }
+
+/* --- Diagram nodes --- */
+.dnode { position: absolute; width: 160px; padding: 10px 12px; border-radius: 10px; border: 2px solid var(--border); background: var(--surface); cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; user-select: none; }
+.dnode:hover { border-color: var(--blue); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+.dnode.dnode-selected { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,0.25), 0 0 20px rgba(88,166,255,0.3), 0 0 40px rgba(88,166,255,0.1); }
+.dnode.dnode-dimmed { opacity: 0.15; pointer-events: none; }
+.dnode-num { font-size: 9px; font-weight: 700; color: var(--text-dim); margin-bottom: 3px; display: flex; align-items: center; gap: 5px; }
+.dnode-name { font-size: 11px; font-weight: 600; color: var(--text-bright); line-height: 1.3; }
+.dnode-meta { font-size: 10px; color: var(--text-dim); margin-top: 3px; line-height: 1.3; }
+.dnode .step-badge { font-size: 8px; padding: 0px 5px; }
+
+/* Per-type diagram node borders */
+.dnode-tool { border-color: var(--cyan); }
+.dnode-tool:hover { border-color: var(--cyan); }
+.dnode-llm { border-color: var(--llm-border); }
+.dnode-llm:hover { border-color: var(--purple); }
+.dnode-template { border-color: var(--template-border); }
+.dnode-template:hover { border-color: var(--blue); }
+.dnode-logic { border-color: var(--logic-border); }
+.dnode-logic:hover { border-color: var(--orange); }
+.dnode-validate { border-color: var(--validate-border); }
+.dnode-validate:hover { border-color: var(--red); }
+.dnode-source { border-color: var(--text-dim); }
+.dnode-source:hover { border-color: var(--text-bright); }
+.dnode-sqlite { border-color: var(--sqlite-border); }
+.dnode-sqlite:hover { border-color: var(--yellow); }
+/* PIPELINE-SPECIFIC: add for 'api' and 'python' types */
+.dnode-api { border-color: var(--cyan); }
+.dnode-api:hover { border-color: var(--cyan); }
+.dnode-python { border-color: var(--logic-border); }
+.dnode-python:hover { border-color: var(--orange); }
+
+/* --- Parallel/sequential group indicators --- */
+.dgroup-parallel { position: absolute; border: 2px dashed var(--text-dim); border-radius: 14px; pointer-events: none; z-index: 0; }
+.dgroup-parallel-label { position: absolute; top: -10px; left: 20px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--text-dim); background: var(--bg); padding: 0 8px; }
+.dgroup-sequential { position: absolute; border: 2px dotted var(--orange); border-radius: 10px; pointer-events: none; z-index: 0; }
+.dgroup-sequential-label { position: absolute; top: -10px; right: 20px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--orange); background: var(--bg); padding: 0 8px; }
+
+/* --- Phase section backgrounds in diagram --- */
+.dphase-section { position: absolute; border: 1px solid rgba(48,54,61,0.5); border-radius: 14px; background: rgba(22,27,34,0.3); pointer-events: none; }
+.dphase-section-label { position: absolute; top: -8px; left: 50%; transform: translateX(-50%); font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-dim); background: var(--bg); padding: 0 10px; white-space: nowrap; border-bottom: 1px solid var(--border); padding-bottom: 2px; }
+.dphase-section.dphase-dimmed { opacity: 0.15; }
+
+/* --- Zoom controls --- */
+.zoom-controls { display: none; position: fixed; top: 70px; left: 20px; z-index: 150; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px; gap: 2px; align-items: center; box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
+.zoom-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); width: 30px; height: 28px; border-radius: 4px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: all 0.1s; }
+.zoom-btn:hover { border-color: var(--blue); color: var(--blue); }
+.zoom-level { font-size: 11px; color: var(--text-dim); padding: 0 8px; min-width: 44px; text-align: center; }
+
+/* --- Floating detail panel --- */
+.diagram-detail-float { display: none; position: fixed; top: 80px; right: 24px; width: 440px; max-height: calc(100vh - 200px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; z-index: 100; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+.diagram-detail-float.visible { display: block; }
+.diagram-detail-float .detail-close { position: absolute; top: 10px; right: 14px; background: none; border: none; color: var(--text-dim); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
+.diagram-detail-float .detail-close:hover { background: var(--surface2); color: var(--text); }
+
+/* --- Edge tooltip --- */
+.edge-tooltip { display: none; position: fixed; z-index: 200; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 11px; pointer-events: none; max-width: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
+
+/* --- Edge highlight on hover --- */
+.edge-highlighted { background: rgba(88,166,255,0.08); border-radius: 6px; }
+
+/* --- Validation loop indicators --- */
+.validation-loop-badge { font-size: 9px; font-weight: 700; color: #ff69b4; background: rgba(255,105,180,0.12); padding: 1px 6px; border-radius: 4px; letter-spacing: 0.3px; }
+.validation-loop-row { border-left: 2px dotted rgba(255,105,180,0.4); padding-left: 10px; }
+
+/* --- Editable prompt --- */
+.prompt-block .editable { outline: none; min-height: 100px; }
+.prompt-block .editable:focus { border-color: var(--blue); }
+.edit-hint { font-size: 11px; color: var(--text-dim); font-style: italic; margin-bottom: 8px; }
+
+/* --- Conditional run: branch type --- */
+.conditional-run-branch { color: var(--purple); background: rgba(130,80,223,0.1); border: 1px solid rgba(130,80,223,0.2); }
+
+/* --- Badge types missing from pipeline-explorer --- */
+.badge-tool { background: rgba(57,210,192,0.1); color: var(--cyan); border: 1px solid var(--cyan); }
+.badge-validate { background: var(--validate); color: var(--red); border: 1px solid var(--validate-border); }
+.badge-source { background: rgba(240,246,252,0.08); color: var(--text-bright); border: 1px solid var(--text-dim); }

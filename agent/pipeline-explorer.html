@@ -1,0 +1,2450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Starbridge Intel Brief Pipeline — Explorer</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
+    --text: #e6edf3; --text-dim: #8b949e; --text-bright: #f0f6fc;
+    --blue: #58a6ff; --green: #3fb950; --orange: #d29922; --purple: #bc8cff;
+    --red: #f85149; --cyan: #39d2c0; --yellow: #e3b341; --pink: #f778ba;
+    --llm: #2a1a3a; --llm-border: #8b5cf6;
+    --template: #1a2a3a; --template-border: #58a6ff;
+    --logic: #2a1f1a; --logic-border: #f0883e;
+    --validate: #2a1a1a; --validate-border: #f85149;
+    --sqlite: #2a2a0a; --sqlite-border: #f5e14e;
+    --api: #0d2a3a; --api-border: #39d2c0;
+    --tool: #1a3a2a; --tool-border: #238636;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+
+  /* ── App grid ─────────────────────────────────────── */
+  .app { display: grid; grid-template-columns: 340px 1fr; grid-template-rows: auto 1fr auto auto; height: 100vh; }
+  .app.diagram-mode { grid-template-columns: 1fr; }
+  .app.diagram-mode .pipeline { display: none; }
+  .app.diagram-mode .detail { display: none; }
+  .app.diagram-mode .diagram-wrap { display: block; }
+
+  /* ── View toggle ──────────────────────────────────── */
+  .view-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 12px; font-size: 11px; cursor: pointer; transition: all 0.15s; }
+  .view-btn:first-of-type { border-radius: 6px 0 0 6px; }
+  .view-btn:last-of-type { border-radius: 0 6px 6px 0; }
+  .view-btn + .view-btn { margin-left: -1px; }
+  .view-btn:not(:first-of-type):not(:last-of-type) { border-radius: 0; }
+  .view-btn.active { border-color: var(--blue); color: var(--blue); background: rgba(88,166,255,0.1); z-index: 1; position: relative; }
+  .view-btn:hover:not(.active) { border-color: var(--blue); color: var(--text); }
+
+  /* ── Diagram wrap ─────────────────────────────────── */
+  .diagram-wrap { display: none; position: relative; overflow: auto; background: var(--bg); grid-column: 1/-1; grid-row: 2; }
+
+
+  /* ── Header ───────────────────────────────────────── */
+  .header { grid-column: 1/-1; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .header h1 { font-size: 15px; font-weight: 600; color: var(--text-bright); white-space: nowrap; }
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .preset-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; transition: all 0.15s; }
+  .preset-btn:hover { border-color: var(--blue); color: var(--text); }
+  .preset-btn.active { border-color: var(--blue); color: var(--blue); background: rgba(88,166,255,0.1); }
+
+  /* ── Pipeline left panel ──────────────────────────── */
+  .pipeline { overflow-y: auto; padding: 16px; border-right: 1px solid var(--border); background: var(--bg); }
+  .phase-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-dim); margin: 16px 0 8px 0; text-align: center; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .phase-label:first-child { margin-top: 0; }
+  .step { padding: 10px 12px; border-radius: 8px; margin-bottom: 4px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
+  .step:hover { background: var(--surface); }
+  .step.selected { border-color: var(--blue); background: var(--surface); }
+  .step.dimmed { opacity: 0.3; pointer-events: none; }
+  .step-num { font-size: 10px; font-weight: 700; color: var(--text-dim); margin-bottom: 2px; display: flex; align-items: center; gap: 6px; }
+  .step-name { font-size: 13px; font-weight: 500; }
+  .step-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .step-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .badge-api { background: var(--api); color: var(--cyan); border: 1px solid var(--api-border); }
+  .badge-template { background: var(--template); color: var(--blue); border: 1px solid var(--template-border); }
+  .badge-python, .badge-logic { background: var(--logic); color: var(--logic-border); border: 1px solid var(--logic-border); }
+  .badge-sqlite { background: var(--sqlite); color: var(--sqlite-border); border: 1px solid var(--sqlite-border); }
+  .badge-tool { background: rgba(57,210,192,0.1); color: var(--cyan); border: 1px solid var(--cyan); }
+  .badge-validate { background: var(--validate); color: var(--red); border: 1px solid var(--validate-border); }
+  .badge-source { background: rgba(240,246,252,0.08); color: var(--text-bright); border: 1px solid var(--text-dim); }
+
+  /* ── Step card enrichment indicators ────────────────── */
+  .step-indicators { display:flex; gap:4px; align-items:center; flex-wrap:wrap; margin-top:3px; }
+  .ind { display:inline-flex; align-items:center; gap:2px; padding:1px 5px; border-radius:3px; font-size:9px; font-family:'SF Mono','Fira Code',monospace; }
+  .ind-svc { background:var(--bg-raised, var(--surface2)); border:1px solid var(--border); color:var(--text-dim); }
+  .ind-timeout { color:var(--yellow); opacity:0.7; font-size:9px; }
+  .ind-tools { color:var(--cyan); opacity:0.7; font-size:9px; }
+
+  /* ── Sub-agent badge ──────────────────────────────────── */
+  .subagent-badge { display:inline-flex; align-items:center; gap:2px; padding:1px 5px; border-radius:3px; font-size:8px; font-weight:600; text-transform:uppercase; background:var(--llm); color:var(--purple); border:1px solid var(--llm-border); }
+
+  /* Compact sizing inside diagram nodes */
+  .dnode .step-indicators { margin-top:2px; margin-bottom:1px; }
+  .dnode .ind { font-size:8px; padding:0 3px; }
+
+  .connector { width: 2px; height: 8px; background: var(--border); margin: 0 0 0 20px; }
+  .parallel-group { border-left: 2px solid var(--text-dim); margin: 8px 0 8px 20px; padding: 14px 0 6px 12px; position: relative; }
+  .parallel-group::before { content: 'PARALLEL'; position: absolute; top: -8px; left: 8px; font-size: 9px; color: var(--text-dim); font-weight: 700; letter-spacing: 1px; background: var(--bg); padding: 0 4px; }
+
+  /* ── Detail right panel ───────────────────────────── */
+  .detail { overflow-y: auto; padding: 24px 28px; background: var(--surface); }
+  .detail-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); font-size: 14px; }
+  .detail h2 { font-size: 18px; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; }
+  .detail .subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+  .detail-section { margin-bottom: 24px; }
+  .detail-section h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .detail-section h3 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  /* ── Data chips ───────────────────────────────────── */
+  .data-flow { display: flex; flex-wrap: wrap; gap: 6px; }
+  .data-chip { padding: 3px 10px; border-radius: 12px; font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .chip-in { background: rgba(88,166,255,0.1); color: var(--blue); border: 1px solid rgba(88,166,255,0.3); }
+  .chip-out { background: rgba(63,185,80,0.1); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+  .chip-feeds { background: rgba(210,153,34,0.1); color: var(--orange); border: 1px solid rgba(210,153,34,0.3); }
+  .chip-tool { background: rgba(57,210,192,0.1); color: var(--cyan); border: 1px solid rgba(57,210,192,0.3); }
+
+  /* ── Output schema ────────────────────────────────── */
+  .output-schema { margin-top: 0; }
+  .schema-row { margin-bottom: 8px; }
+  .schema-row:last-child { margin-bottom: 0; }
+  .schema-name { font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--green); background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.3); border-radius: 12px; padding: 3px 10px; display: inline-block; margin-bottom: 2px; }
+  .schema-type { font-size: 10px; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--text-dim); background: rgba(63,185,80,0.05); border: 1px solid rgba(63,185,60,0.1); border-radius: 4px; padding: 4px 8px; margin: 2px 0 0 0; white-space: pre-wrap; overflow-wrap: break-word; line-height: 1.5; }
+  .schema-type-inline { font-size: 10px; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--text-dim); display: block; padding-left: 2px; opacity: 0.8; }
+
+  /* ── Input source groups ──────────────────────────── */
+  .input-group { margin-bottom: 10px; }
+  .input-group:last-child { margin-bottom: 0; }
+  .input-group-label { font-size: 10px; color: var(--text-dim); margin-bottom: 4px; padding-left: 2px; }
+  .src-link { color: var(--cyan); cursor: pointer; }
+  .src-link:hover { text-decoration: underline; }
+
+  /* ── Prompt / detail block ────────────────────────── */
+  .prompt-block { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; color: var(--text); }
+
+  /* ── Callout ──────────────────────────────────────── */
+  .callout { display: flex; align-items: flex-start; gap: 8px; padding: 10px 14px; border-radius: 8px; font-size: 11px; line-height: 1.5; margin: 0 0 18px 0; border: 1px solid; }
+  .callout-info { background: rgba(88,166,255,0.06); border-color: rgba(88,166,255,0.15); color: var(--blue); }
+  .callout-icon { font-size: 14px; flex-shrink: 0; }
+
+  /* ── Scoring bars ─────────────────────────────────── */
+  .scoring-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .scoring-bar-label { font-size: 11px; width: 90px; color: var(--text-dim); text-transform: capitalize; }
+  .scoring-bar-track { flex: 1; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+  .scoring-bar-fill { height: 100%; border-radius: 3px; background: var(--orange); }
+  .scoring-bar-val { font-size: 10px; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--text-dim); width: 32px; text-align: right; }
+
+  /* ── Conditional run badge ────────────────────────── */
+  .conditional-run { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px; margin: 6px 0 2px 0; }
+  .conditional-run-always { color: var(--green); background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.2); }
+  .conditional-run-stop { color: var(--red); background: rgba(248,81,73,0.1); border: 1px solid rgba(248,81,73,0.2); }
+  .conditional-run-skip { color: var(--orange); background: rgba(210,153,34,0.1); border: 1px solid rgba(210,153,34,0.2); }
+  .conditional-run-branch { color: var(--purple); background: rgba(130,80,223,0.1); border: 1px solid rgba(130,80,223,0.2); }
+
+  /* ── Quality rules ────────────────────────────────── */
+  .quality-rule { padding: 6px 10px; background: rgba(248,81,73,0.08); border-left: 3px solid var(--red); border-radius: 0 6px 6px 0; margin-bottom: 6px; font-size: 12px; line-height: 1.5; color: var(--text-dim); }
+
+  /* ── Edge cases ───────────────────────────────────── */
+  .edge-case { padding: 8px 12px; background: var(--bg); border-radius: 6px; margin-bottom: 4px; font-size: 12px; border-left: 3px solid var(--orange); }
+  .edge-case.ec-stop { border-left-color: var(--red); background: rgba(248,81,73,0.06); }
+  .edge-case.ec-degrade { border-left-color: var(--orange); }
+  .edge-case.ec-skip { border-left-color: var(--text-dim); }
+  .edge-case .ec-severity { display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; margin-right: 8px; vertical-align: middle; }
+  .ec-stop .ec-severity { color: var(--red); background: rgba(248,81,73,0.15); }
+  .ec-degrade .ec-severity { color: var(--orange); background: rgba(210,153,34,0.15); }
+  .ec-skip .ec-severity { color: var(--text-dim); background: rgba(139,148,158,0.15); }
+  .edge-case .ec-label { color: var(--text); font-weight: 600; }
+  .edge-case .ec-action { color: var(--text-dim); display: block; margin-top: 3px; margin-left: 2px; }
+
+  /* ── Impl tags ────────────────────────────────────── */
+  .impl-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .impl-tag { font-size: 10px; font-family: 'SF Mono', 'Fira Code', monospace; background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); padding: 2px 8px; border-radius: 4px; }
+  .impl-tag span { color: var(--blue); }
+
+  /* ── Check list ───────────────────────────────────── */
+  .check-item { font-size: 12px; color: var(--text-dim); padding: 4px 0; line-height: 1.5; display: flex; gap: 6px; }
+  .check-advisory { color: var(--yellow); }
+
+  /* ── Prompt output bar ────────────────────────────── */
+  .prompt-output { grid-column: 1/-1; border-top: 1px solid var(--border); background: var(--surface); padding: 12px 20px; display: flex; align-items: flex-start; gap: 12px; max-height: 180px; transition: all 0.2s; }
+  .prompt-output.minimized { max-height: 40px; padding: 10px 20px; overflow: hidden; }
+  .prompt-output.minimized .prompt-output-text { display: none; }
+  .prompt-output.minimized .copy-btn, .prompt-output.minimized .view-all-btn { display: none; }
+  .prompt-output-text { flex: 1; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: var(--text); line-height: 1.5; overflow-y: auto; max-height: 150px; white-space: pre-wrap; }
+  .copy-btn { background: var(--blue); color: #fff; border: none; padding: 6px 16px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.15s; align-self: flex-end; }
+  .copy-btn:hover { opacity: 0.85; }
+  .copy-btn.copied { background: var(--green); }
+  .minimize-btn { background: none; border: none; color: var(--text-dim); font-size: 16px; cursor: pointer; padding: 0 4px; line-height: 1; flex-shrink: 0; border-radius: 3px; }
+  .minimize-btn:hover { color: var(--text); background: var(--surface2); }
+  .view-all-btn { background: var(--surface2); color: var(--text); border: 1px solid var(--border); padding: 6px 16px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; align-self: flex-end; }
+  .view-all-btn:hover { background: var(--border); }
+
+  /* ── Modal ────────────────────────────────────────── */
+  .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; justify-content: center; align-items: center; }
+  .modal-overlay.visible { display: flex; }
+  .modal { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; width: 90vw; max-width: 900px; height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .modal-header h3 { font-size: 15px; color: var(--text-bright); }
+  .modal-close { background: none; border: none; color: var(--text-dim); font-size: 20px; cursor: pointer; padding: 2px 8px; border-radius: 4px; line-height: 1; }
+  .modal-close:hover { color: var(--text); background: var(--surface2); }
+  .modal-body { flex: 1; overflow-y: auto; padding: 20px; }
+  .modal-body pre { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: var(--text); line-height: 1.5; white-space: pre-wrap; }
+
+  /* ── Legend ───────────────────────────────────────── */
+  .legend { grid-column: 1/-1; display: flex; align-items: center; gap: 16px; padding: 9px 20px; border-top: 1px solid var(--border); background: var(--surface); flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-dim); }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+  .legend-sep { width: 1px; height: 16px; background: var(--border); }
+  .legend-stat { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; color: var(--text-dim); }
+  .legend-stat strong { color: var(--text); font-weight: 600; }
+
+  /* ── Monitor mode ─────────────────────────────────── */
+  .monitor-wrap { padding: 24px 32px; overflow-y: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-content: start; min-height: 100%; }
+  .monitor-left { display: flex; flex-direction: column; gap: 20px; }
+  .monitor-right { display: flex; flex-direction: column; gap: 0; }
+
+  /* Form */
+  .webhook-form { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+  .webhook-form h3 { font-size: 13px; font-weight: 700; color: var(--text-bright); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.8px; }
+  .form-row { margin-bottom: 12px; }
+  .form-label { display: block; font-size: 11px; font-weight: 600; color: var(--text-dim); margin-bottom: 4px; }
+  .form-required::after { content: ' *'; color: var(--red); }
+  .form-input, .form-textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; color: var(--text); font-family: inherit; }
+  .form-input:focus, .form-textarea:focus { outline: none; border-color: var(--blue); }
+  .form-textarea { min-height: 50px; resize: vertical; }
+  .form-hint { font-size: 10px; color: var(--text-dim); margin-top: 2px; font-style: italic; }
+  .form-actions { display: flex; gap: 8px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  .btn-run { background: var(--green); color: #fff; border: none; padding: 8px 20px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; transition: all 0.15s; }
+  .btn-run:hover { opacity: 0.85; }
+  .btn-run:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-preset, .btn-more { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); padding: 6px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; transition: all 0.15s; }
+  .btn-preset:hover, .btn-more:hover { border-color: var(--blue); color: var(--text); }
+  .more-fields { display: none; }
+  .more-fields.visible { display: block; }
+  .run-selector-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .run-selector-row label { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+  .run-selector { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 11px; color: var(--text); font-family: inherit; }
+  .run-selector:focus { outline: none; border-color: var(--blue); }
+
+  /* Step tracker */
+  .monitor-tracker { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; }
+  .monitor-tracker h3 { font-size: 13px; font-weight: 700; color: var(--text-bright); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.8px; }
+  .tracker-phase { margin-bottom: 10px; }
+  .tracker-phase-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+  .tracker-phase-dur { font-size: 9px; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--text-dim); opacity: 0.7; font-weight: 400; }
+  .tracker-total { display: flex; justify-content: space-between; align-items: center; padding: 8px 8px 4px; margin-top: 8px; border-top: 2px solid var(--border); font-size: 12px; font-weight: 700; color: var(--text-bright); }
+  .tracker-step { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: default; transition: background 0.1s; }
+  .tracker-step:hover { background: rgba(255,255,255,0.02); }
+  .tracker-step-id { font-size: 10px; font-family: 'SF Mono', 'Fira Code', monospace; font-weight: 700; color: var(--text-dim); min-width: 28px; }
+  .tracker-step-name { font-size: 12px; color: var(--text); flex: 1; }
+  .tracker-step-status { font-size: 12px; min-width: 20px; text-align: center; }
+  .tracker-step-dur { font-size: 10px; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--text-dim); min-width: 50px; text-align: right; }
+  .tracker-substeps { padding-left: 36px; margin-top: 2px; }
+  .tracker-substep { font-size: 10px; color: var(--text-dim); padding: 2px 0; display: flex; gap: 6px; }
+
+  .st-pending { color: var(--text-dim); }
+  .st-running { color: var(--blue); }
+  .st-completed { color: var(--green); }
+  .st-failed { color: var(--red); }
+  .st-warning { color: var(--orange); }
+  @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .st-running .tracker-step-status { animation: pulse-dot 1.2s ease-in-out infinite; }
+
+  /* Data viewer */
+  .data-viewer { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; flex: 1; display: flex; flex-direction: column; min-height: 300px; }
+  .data-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .data-tab { padding: 8px 16px; font-size: 11px; font-weight: 600; color: var(--text-dim); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; background: none; border-top: none; border-left: none; border-right: none; }
+  .data-tab:hover { color: var(--text); }
+  .data-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+  .data-panel { padding: 16px; overflow-y: auto; flex: 1; }
+  .data-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .data-table th { text-align: left; font-weight: 700; color: var(--text-dim); padding: 6px 8px; border-bottom: 1px solid var(--border); text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; }
+  .data-table td { padding: 6px 8px; border-bottom: 1px solid rgba(48,54,61,0.3); color: var(--text); }
+  .data-table tr:hover td { background: rgba(255,255,255,0.02); }
+  .data-kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 12px; }
+  .data-kv dt { color: var(--text-dim); font-weight: 600; }
+  .data-kv dd { color: var(--text); word-break: break-all; }
+  .data-kv dd a { color: var(--blue); }
+  .data-empty { color: var(--text-dim); font-size: 12px; font-style: italic; padding: 20px; text-align: center; }
+  .monitor-msg { padding: 12px 16px; border-radius: 8px; font-size: 12px; margin-bottom: 12px; }
+  .monitor-msg-error { background: rgba(248,81,73,0.1); border: 1px solid rgba(248,81,73,0.3); color: var(--red); }
+  .monitor-msg-info { background: rgba(88,166,255,0.06); border: 1px solid rgba(88,166,255,0.15); color: var(--blue); }
+
+
+  /* ── Diagram canvas (SVG layer) ────────────────────── */
+  .diagram-canvas { transform-origin: 0 0; transition: transform 0.15s ease; }
+  .diagram-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; }
+  .diagram-nodes { position: absolute; top: 0; left: 0; z-index: 2; }
+
+  /* ── Diagram nodes ─────────────────────────────────── */
+  .dnode { position: absolute; width: 160px; padding: 10px 12px; border-radius: 10px; border: 2px solid var(--border); background: var(--surface); cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; user-select: none; }
+  .dnode:hover { border-color: var(--blue); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+  .dnode.dnode-selected { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,0.25), 0 0 20px rgba(88,166,255,0.3), 0 0 40px rgba(88,166,255,0.1); }
+  .dnode.dnode-dimmed { opacity: 0.15; pointer-events: none; }
+  .dnode-num { font-size: 9px; font-weight: 700; color: var(--text-dim); margin-bottom: 3px; display: flex; align-items: center; gap: 5px; }
+  .dnode-name { font-size: 11px; font-weight: 600; color: var(--text-bright); line-height: 1.3; }
+  .dnode-meta { font-size: 10px; color: var(--text-dim); margin-top: 3px; line-height: 1.3; }
+  .dnode .step-badge { font-size: 8px; padding: 0px 5px; }
+
+  /* Per-type diagram node borders */
+  .dnode-llm { border-color: var(--llm-border); }
+  .dnode-llm:hover { border-color: var(--purple); }
+  .dnode-template { border-color: var(--template-border); }
+  .dnode-template:hover { border-color: var(--blue); }
+  .dnode-sqlite { border-color: var(--sqlite-border); }
+  .dnode-sqlite:hover { border-color: var(--yellow); }
+  .dnode-api { border-color: var(--cyan); }
+  .dnode-api:hover { border-color: var(--cyan); }
+  .dnode-python { border-color: var(--logic-border); }
+  .dnode-python:hover { border-color: var(--orange); }
+  .dnode-tool { border-color: var(--cyan); }
+  .dnode-tool:hover { border-color: var(--cyan); }
+  .dnode-logic { border-color: var(--logic-border); }
+  .dnode-logic:hover { border-color: var(--orange); }
+  .dnode-validate { border-color: var(--validate-border); }
+  .dnode-validate:hover { border-color: var(--red); }
+  .dnode-source { border-color: var(--text-dim); }
+  .dnode-source:hover { border-color: var(--text-bright); }
+
+  /* ── Parallel/sequential group indicators ──────────── */
+  .dgroup-parallel { position: absolute; border: 2px dashed var(--text-dim); border-radius: 14px; pointer-events: none; z-index: 0; }
+  .dgroup-parallel-label { position: absolute; top: -10px; left: 20px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--text-dim); background: var(--bg); padding: 0 8px; }
+  .dgroup-sequential { position: absolute; border: 2px dotted var(--pink); border-radius: 10px; pointer-events: none; z-index: 0; }
+  .dgroup-sequential-label { position: absolute; top: -10px; right: 20px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--pink); background: var(--bg); padding: 0 8px; }
+
+  /* ── Phase section backgrounds in diagram ──────────── */
+  .dphase-section { position: absolute; border: 1px solid rgba(48,54,61,0.5); border-radius: 14px; background: rgba(22,27,34,0.3); pointer-events: none; }
+  .dphase-section-label { position: absolute; top: -8px; left: 50%; transform: translateX(-50%); font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-dim); background: var(--bg); padding: 0 10px; white-space: nowrap; border-bottom: 1px solid var(--border); padding-bottom: 2px; }
+  .dphase-section.dphase-dimmed { opacity: 0.15; }
+
+  /* ── Zoom controls ─────────────────────────────────── */
+  .zoom-controls { display: none; position: fixed; top: 70px; left: 20px; z-index: 150; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px; gap: 2px; align-items: center; box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
+  .zoom-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); width: 30px; height: 28px; border-radius: 4px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: all 0.1s; }
+  .zoom-btn:hover { border-color: var(--blue); color: var(--blue); }
+  .zoom-level { font-size: 11px; color: var(--text-dim); padding: 0 8px; min-width: 44px; text-align: center; }
+
+  /* ── Floating detail panel ─────────────────────────── */
+  .diagram-detail-float { display: none; position: fixed; top: 80px; right: 24px; width: 440px; max-height: calc(100vh - 200px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; z-index: 100; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+  .diagram-detail-float.visible { display: block; }
+  .diagram-detail-float .detail-close { position: absolute; top: 10px; right: 14px; background: none; border: none; color: var(--text-dim); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
+  .diagram-detail-float .detail-close:hover { background: var(--surface2); color: var(--text); }
+
+  /* ── Edge tooltip ──────────────────────────────────── */
+  .edge-tooltip { display: none; position: fixed; z-index: 200; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 11px; pointer-events: none; max-width: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
+
+  /* ── Edge highlight on hover ───────────────────────── */
+  .edge-highlighted { background: rgba(88,166,255,0.08); border-radius: 6px; }
+
+  /* ── Validation loop indicators ────────────────────── */
+  .validation-loop-badge { font-size: 9px; font-weight: 700; color: #ff69b4; background: rgba(255,105,180,0.12); padding: 1px 6px; border-radius: 4px; letter-spacing: 0.3px; }
+  .validation-loop-row { border-left: 2px dotted rgba(255,105,180,0.4); padding-left: 10px; }
+
+  /* ── Editable prompt ───────────────────────────────── */
+  .prompt-block .editable { outline: none; min-height: 100px; }
+  .prompt-block .editable:focus { border-color: var(--blue); }
+  .edit-hint { font-size: 11px; color: var(--text-dim); font-style: italic; margin-bottom: 8px; }
+
+  /* ── Scrollbar ─────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="app" id="app">
+
+  <div class="header">
+    <div style="display:flex;align-items:center;gap:12px">
+      <img src="starbridge-logo-white.svg" alt="Starbridge" style="height:22px;flex-shrink:0">
+      <h1>Intel Brief<span style="font-size:10px;font-weight:700;letter-spacing:1px;background:var(--purple);color:var(--bg);padding:2px 8px;border-radius:4px;margin-left:10px">PIPELINE</span></h1>
+    </div>
+    <div class="controls">
+      <span style="font-size:12px;color:var(--text-dim)">19 Steps &middot; 7 Phases</span>
+      <span style="width:1px;height:20px;background:var(--border);display:inline-block;margin:0 2px"></span>
+      <button class="preset-btn" onclick="focusPhase('discover')">Discovery</button>
+      <button class="preset-btn" onclick="focusPhase('generate')">Generation</button>
+      <button class="preset-btn active" id="presetAll" onclick="focusPhase('all')">Full Pipeline</button>
+      <span style="width:1px;height:20px;background:var(--border);display:inline-block;margin:0 2px"></span>
+      <button class="view-btn active" id="viewList" onclick="setView('list')">List</button>
+      <button class="view-btn" id="viewDiagram" onclick="setView('diagram')">Diagram</button>
+      <button class="view-btn" id="viewMonitor" onclick="setView('monitor')">Monitor</button>
+    </div>
+  </div>
+
+  <div class="pipeline" id="pipeline"></div>
+  <div class="detail" id="detail"><div class="detail-empty">Click a step to see details</div></div>
+
+  <div class="diagram-wrap" id="diagramWrap">
+    <div class="monitor-wrap" id="monitorWrap" style="display:none"></div>
+    <div class="diagram-canvas" id="diagramCanvas" style="display:none">
+      <svg class="diagram-svg" id="diagramSvg"></svg>
+      <div class="diagram-nodes" id="diagramNodes"></div>
+    </div>
+    <div class="diagram-detail-float" id="diagramDetail"></div>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:var(--purple)"></div>LLM (Claude CLI)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div>API (Starbridge/Notion)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>Template</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--orange)"></div>Python Logic</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--sqlite-border)"></div>SQLite</div>
+    <div class="legend-sep"></div>
+    <div class="legend-stat"><strong>4</strong> LLM calls</div>
+    <div class="legend-stat"><strong>~12</strong> API calls</div>
+    <div class="legend-stat"><strong>4</strong> SQLite ops</div>
+    <div class="legend-sep"></div>
+    <div class="legend-stat">Target runtime: <strong>30-60s</strong></div>
+  </div>
+
+  <div class="prompt-output" id="promptOutputBar">
+    <button class="minimize-btn" id="minimizeBtn" onclick="togglePromptBar()" title="Minimize">&#9662;</button>
+    <div class="prompt-output-text" id="promptOutput">Select a step to see its full markdown spec.</div>
+    <button class="view-all-btn" onclick="showAllMarkdown()">View All</button>
+    <button class="copy-btn" id="copyBtn" onclick="copyPrompt()">Copy Markdown</button>
+  </div>
+
+  <div class="modal-overlay" id="mdModalOverlay" onclick="if(event.target===this)hideAllMarkdown()">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Full Pipeline Markdown</h3>
+        <div style="display:flex;gap:8px">
+          <button class="copy-btn" id="copyAllBtn" onclick="copyAllMarkdown()">Copy All</button>
+          <button class="modal-close" onclick="hideAllMarkdown()">&times;</button>
+        </div>
+      </div>
+      <div class="modal-body"><pre id="mdModalContent"></pre></div>
+    </div>
+  </div>
+
+  <div class="zoom-controls" id="zoomControls">
+    <button class="zoom-btn" onclick="zoomDiagram(-0.1)" title="Zoom out">&#8722;</button>
+    <span class="zoom-level" id="zoomLevel">100%</span>
+    <button class="zoom-btn" onclick="zoomDiagram(0.1)" title="Zoom in">+</button>
+    <button class="zoom-btn" onclick="zoomDiagram(0)" title="Fit to view" style="font-size:12px">Fit</button>
+  </div>
+
+  <div id="edgeTooltip" class="edge-tooltip"></div>
+
+</div>
+
+<script>
+// =======================================================
+// STATE
+// =======================================================
+
+var state = {
+  selectedStep: null,
+  focusPhase: 'all',
+  editedPrompts: {},
+  view: 'list',
+  zoom: 1,
+  promptMinimized: false,
+  highlightedEdge: null
+};
+
+// =======================================================
+// STEPS — Production pipeline (19 steps, 7 phases)
+// =======================================================
+
+var STEPS = [
+
+  // --- Phase I: SOURCE ---
+  { id:'s0', num:'0', phase:'source', name:'Parse Webhook', type:'python',
+    meta:'Extract + validate 7 webhook fields — pure Python, no external calls',
+    conditionalRun:{ type:'stop', rule:'STOPS if no target_domain AND no target_company' },
+    inputs:[], outputs:['target_company','target_domain','product_description','campaign_signal','campaign_id','prospect_name','prospect_email','tier'],
+    tools:[], module:'pipeline.py', fn:'s0_parse_webhook', timeout:null, service:null,
+    prompt:null,
+    detail:'Extracts and validates the 7 webhook fields from the incoming Clay webhook payload. First step — no external calls, pure Python validation. At least one of target_company or target_domain must be non-empty. If target_domain looks like an email address, extracts the domain portion.',
+    qualityRules:[
+      'At least one of target_company or target_domain must be non-empty',
+      'target_domain must be a valid domain format (not an email address, not blank)'
+    ],
+    edgeCases:[
+      { label:'target_domain is an email address', action:'Extract domain part (split on @). Log warning — Clay webhook may be misconfigured.', severity:'degrade' },
+      { label:'Both target_company and target_domain missing', action:'Raise ValueError — pipeline stops immediately.', severity:'stop' }
+    ],
+    outputSchema:{
+      'target_company':'string','target_domain':'string (validated)','product_description':'string',
+      'campaign_signal':'string','campaign_id':'string','prospect_name':'string','prospect_email':'string'
+    }
+  },
+
+  // --- Phase II: INPUT ---
+  { id:'s1', num:'1', phase:'input', name:'Validate + Load + DB Stub', type:'sqlite',
+    meta:'Validate domain, init SQLite, create run stub, load prior runs for same domain',
+    conditionalRun:{ type:'stop', rule:'STOPS if SQLite init fails — no state preservation possible' },
+    inputs:['target_company','target_domain','product_description','campaign_signal','prospect_name','prospect_email'],
+    outputs:['DB_RUN_ID','PRIOR_RUNS','EXISTING_INSIGHTS'],
+    tools:['sqlite_init','sqlite_insert'], module:'pipeline.py + db.py', fn:'s1_validate_and_load', timeout:null, service:'SQLite',
+    prompt:null,
+    detail:'Validates domain format, initializes SQLite DB (creates tables if they don\'t exist), and creates a run stub at status=\'processing\'. Run stub exists from this point forward — all subsequent steps have a run_id so partial state can be recovered even if a later step crashes.\n\nLoads prior runs (LIMIT 5, most recent first) and cached discoveries (LIMIT 50, highest score first) for the same target_domain. Prior run data flows to s2 to enable divergent search strategies.\n\nEvery step uses a StepTimer context manager that logs timing + status to the audit_log table.',
+    qualityRules:[
+      'Run stub must be created before any API or LLM call — enables partial state recovery from s1 onward',
+      'PRIOR_RUNS must include raw discovery JSON (signals_a/b, buyers) so s2 can avoid duplicate angles'
+    ],
+    edgeCases:[
+      { label:'SQLite init fails', action:'Hard fail — pipeline cannot preserve state. Operator must check DB path and permissions.', severity:'stop' },
+      { label:'Same prospect_email already has a completed run', action:'Set DUPLICATE flag. s2 will vary discovery angles to produce a different report.', severity:'degrade' }
+    ],
+    outputSchema:{
+      'DB_RUN_ID':'integer — auto-increment ID from INSERT INTO runs (status=\'processing\')',
+      'PRIOR_RUNS':'[{ id, targetDomain, prospectEmail, searchStrategy, discoverySignalsA, discoverySignalsB, discoveryBuyers, status, createdAt }]',
+      'EXISTING_INSIGHTS':'[{ id, runId, targetDomain, buyerId, buyerName, signalType, signalSummary, signalScore, discoveredAt }]'
+    }
+  },
+
+  // --- Phase III: ANALYZE ---
+  { id:'s2', num:'2', phase:'analyze', name:'LLM: Search Strategy', type:'llm',
+    meta:'SLED procurement analyst sub-agent — buyer segments, keywords, opportunity types',
+    conditionalRun:{ type:'always' },
+    inputs:['target_company','target_domain','product_description','campaign_signal','prior_run_count'],
+    outputs:['SEARCH_STRATEGY'],
+    tools:['claude_cli'], module:'pipeline.py → llm.py', fn:'s2_search_strategy() → llm.search_strategy()', timeout:'120s (CLI)', service:'Claude CLI (configurable via LLM_MODEL)',
+    prompt:'You are a SLED procurement intelligence analyst.\n\nAnalyze this vendor/product and determine which SLED buyer segments and search keywords would surface relevant procurement signals.\n\nReturn a JSON object with these keys:\n- sled_segments: Which buyer types would use this product\n- primary_keywords (3-5): General procurement search terms\n- alternate_keywords (2-3): Broader fallback terms\n- meeting_keywords (up to 8): Board meeting agenda language for early buying intent. Action-oriented phrases like "discussed challenges in [X]", "explored options for [Y]", "requested analysis of [Z]". Include specific service areas. AVOID late-stage procurement language.\n- rfp_keywords (up to 8): Terms that appear in RFP/procurement documents — product categories and service descriptions. Both specific and general variations. Use procurement officer language, not marketing.\n- buyer_types: Valid types from Starbridge\n- opportunity_types: Meeting, Purchase, RFP, Contract\n- geographic_hints\n- ideal_buyer_profile: 1-sentence description\n\nIf PRIOR_RUNS exist, DIVERGE the strategy — use different keyword angles to avoid duplicates.',
+    detail:'SLED procurement intelligence analyst sub-agent. Analyzes the product/company and determines which SLED buyer segments, keywords, and opportunity types to search.\n\nKeyword types: primary_keywords (general procurement), alternate_keywords (broader fallback), meeting_keywords (board agenda language for early buying intent), rfp_keywords (procurement document terminology).\n\nIf PRIOR_RUNS exist for this domain, the sub-agent DIVERGES the strategy (different keyword angles, segments, or buyer profiles) to avoid generating a duplicate report.\n\nFallback: if LLM fails, pipeline.py adds opportunity_types=["Meeting","Purchase","RFP","Contract"] and uses campaign_signal as sole keyword.',
+    qualityRules:[
+      'Keywords must use SLED procurement language, not vendor marketing speak',
+      'At least 1 SLED buyer_type must be identified',
+      'Primary and alternate keywords must not significantly overlap'
+    ],
+    edgeCases:[
+      { label:'Product description too vague', action:'LLM infers from target_company + domain. Sets low-confidence flag on SEARCH_STRATEGY.', severity:'degrade' },
+      { label:'LLM times out (>120s)', action:'pipeline.py fallback: campaign_signal as sole keyword, opportunity_types=["Meeting","Purchase","RFP","Contract"], empty buyer_types. Note: llm.py does NOT set opportunity_types fallback — pipeline wrapper adds it.', severity:'degrade' },
+      { label:'Prior runs exist for same domain', action:'DIVERGE strategy — use different keyword angles, segments, or geographic focus.', severity:'skip' }
+    ],
+    outputSchema:{
+      'SEARCH_STRATEGY':'{ primary_keywords: string[], alternate_keywords: string[], meeting_keywords: string[], rfp_keywords: string[], buyer_types: string[], opportunity_types: string[], geo_hints: string[], ideal_buyer_profile: string }'
+    }
+  },
+
+  // --- Phase IV: DISCOVER (3 parallel) ---
+  { id:'s3a', num:'3a', phase:'discover', name:'Primary Opp Search', type:'api', parallel:true,
+    meta:'opportunity_search() — primary keywords + LLM-chosen opportunity types, pageSize=40',
+    conditionalRun:{ type:'always' },
+    inputs:['SEARCH_STRATEGY.primary_keywords','SEARCH_STRATEGY.opportunity_types'],
+    outputs:['DISCOVERY_SIGNALS_A'],
+    tools:['opportunity_search'], module:'tools.py', fn:'opportunity_search()', timeout:'20s', service:'Starbridge API',
+    prompt:null,
+    detail:'Searches Starbridge\'s 107M+ procurement records using the LLM-chosen primary keywords and opportunity types. Results sorted by SearchRelevancy. Runs in parallel with s3b and s3c via ThreadPoolExecutor.\n\nCall: opportunity_search(searchQuery=joined_primary_keywords, types=opportunity_types, pageSize=40, sortField=\'SearchRelevancy\')',
+    qualityRules:[],
+    edgeCases:[
+      { label:'0 results', action:'Try single keywords instead of joined OR query. If still 0, rely on s3b/s3c results.', severity:'degrade' },
+      { label:'API timeout (>20s)', action:'Return empty list. Pipeline continues with s3b/s3c results only.', severity:'degrade' }
+    ],
+    outputSchema:{ 'DISCOVERY_SIGNALS_A':'[{ buyerId, buyerName, title, summary, type, postedDate, dueDate, purchaseAmount }]' }
+  },
+
+  { id:'s3b', num:'3b', phase:'discover', name:'Alternate Opp Search', type:'api', parallel:true,
+    meta:'opportunity_search() — alternate/adjacent keywords for discovery breadth',
+    conditionalRun:{ type:'skip', rule:'Skipped entirely if no alternate_keywords in SEARCH_STRATEGY' },
+    inputs:['SEARCH_STRATEGY.alternate_keywords','SEARCH_STRATEGY.opportunity_types'],
+    outputs:['DISCOVERY_SIGNALS_B'],
+    tools:['opportunity_search'], module:'tools.py', fn:'opportunity_search()', timeout:'20s', service:'Starbridge API',
+    prompt:null,
+    detail:'Broader secondary search using alternate/adjacent keywords to catch signals the primary search might miss. Same tool call structure as s3a but with alternate_keywords. Runs in parallel with s3a and s3c.',
+    qualityRules:[],
+    edgeCases:[
+      { label:'0 results', action:'Not critical if s3a returned data. Proceed with available results.', severity:'skip' },
+      { label:'High overlap with s3a', action:'Expected if keywords are close. Deduplication in s4 handles this.', severity:'skip' }
+    ],
+    outputSchema:{ 'DISCOVERY_SIGNALS_B':'[{ buyerId, buyerName, title, summary, type, postedDate, dueDate, purchaseAmount }]' }
+  },
+
+  { id:'s3c', num:'3c', phase:'discover', name:'Buyer Search', type:'api', parallel:true,
+    meta:'buyer_search() — buyer_types + state_codes (name-contains filter, NOT keyword search)',
+    conditionalRun:{ type:'skip', rule:'Skipped if no buyer_types and no geo_hints in SEARCH_STRATEGY' },
+    inputs:['SEARCH_STRATEGY.buyer_types','SEARCH_STRATEGY.geo_hints'],
+    outputs:['DISCOVERY_BUYERS'],
+    tools:['buyer_search'], module:'tools.py', fn:'buyer_search()', timeout:'20s', service:'Starbridge API',
+    prompt:null,
+    detail:'Supplementary buyer search by type + geographic filters. Note: buyer_search\'s "query" field is a Name Contains filter (not keyword search) — we skip it and rely on buyer_types + state_codes.\n\nProvides a fallback pool of buyers if opportunity searches return few unique buyers. Also surfaces large/prominent buyers that should be featured.',
+    qualityRules:[],
+    edgeCases:[
+      { label:'0 results', action:'Not critical if s3a/s3b found buyers via opportunities. Proceed.', severity:'skip' },
+      { label:'Long query string returns 0 results', action:'Truncate to first word of buyer_type. Known API quirk (documented in MEMORY.md).', severity:'degrade' }
+    ],
+    outputSchema:{ 'DISCOVERY_BUYERS':'[{ buyerId, name, stateCode, tags: string[], url }]' }
+  },
+
+  // --- Phase V: SELECT ---
+  { id:'s4', num:'4', phase:'select', name:'Rank + Score Buyers', type:'python',
+    meta:'Deterministic scoring: merge signals \u2192 buyer map \u2192 6-factor score \u2192 select featured + secondary',
+    conditionalRun:{ type:'stop', rule:'STOPS if 0 buyers found across all 3 discovery searches' },
+    inputs:['DISCOVERY_SIGNALS_A','DISCOVERY_SIGNALS_B','DISCOVERY_BUYERS','SEARCH_STRATEGY'],
+    outputs:['FEATURED_BUYER_ID','FEATURED_BUYER_NAME','SECONDARY_BUYERS','ALL_SCORED_BUYERS','SELECTION_RATIONALE'],
+    tools:[], module:'pipeline.py', fn:'s4_rank_and_select', timeout:null, service:null,
+    prompt:null,
+    detail:'Deterministic scoring — no LLM call. Merges signals from s3a/s3b and buyers from s3c into a buyer map, deduplicating by buyerId. Scores each buyer on 6 weighted factors, sorts descending. Top scorer = featured, next 4 = secondary.',
+    scoring:{ type_match:25, signal_count:20, recency:20, urgency:15, dollar:10, keyword:10 },
+    qualityRules:[
+      'Featured buyer must have at least 1 relevant signal',
+      'Secondary buyers should span different states or buyer types when possible'
+    ],
+    edgeCases:[
+      { label:'0 buyers across all searches', action:'Raise ValueError — pipeline stops. BDR must trigger manually.', severity:'stop' },
+      { label:'Only 1 unique buyer found', action:'That buyer is featured. No secondary cards. Note limitation in exec summary.', severity:'degrade' },
+      { label:'Opportunity types don\'t match SEARCH_STRATEGY', action:'Type-match scoring (25% weight) penalizes mismatches but doesn\'t exclude them.', severity:'skip' }
+    ],
+    outputSchema:{
+      'FEATURED_BUYER_ID':'string',
+      'FEATURED_BUYER_NAME':'string',
+      'SECONDARY_BUYERS':'[{ buyerId, buyerName, score, signalCount, topSignalType }]',
+      'ALL_SCORED_BUYERS':'[{ buyerId, buyerName, score, signalCount, stateCode }]',
+      'SELECTION_RATIONALE':'string — why featured buyer was selected'
+    }
+  },
+
+  { id:'s5', num:'5', phase:'select', name:'Persist Discovery', type:'sqlite',
+    meta:'Backfill run stub with discovery columns, insert scored buyers into discoveries table',
+    conditionalRun:{ type:'always' },
+    inputs:['DISCOVERY_SIGNALS_A','DISCOVERY_SIGNALS_B','DISCOVERY_BUYERS','FEATURED_BUYER_ID','SECONDARY_BUYERS','DB_RUN_ID','SEARCH_STRATEGY'],
+    outputs:['DB_RUN_ID (backfilled)'],
+    tools:['sqlite_update'], module:'pipeline.py → db.py', fn:'s5_persist_discovery() → db.update_run_discovery()', timeout:null, service:'SQLite',
+    prompt:null,
+    detail:'Backfills the run stub (created in s1) with discovery-phase columns: search_strategy, discovery_signals_a/b, discovery_buyers, featured_buyer_id/name, secondary_buyers. Inserts all scored buyers into the discoveries table.\n\nEnables: future runs load cached raw discovery data, re-ranking without re-calling APIs, analytics on search strategy performance, debugging raw vs ranked selections.',
+    qualityRules:[
+      'DB_RUN_ID must already exist (created in s1) — never insert a new row here',
+      'All scored buyers must have a corresponding row in the discoveries table'
+    ],
+    edgeCases:[
+      { label:'SQLite write fails', action:'Log warning, continue pipeline. Persistence is non-blocking.', severity:'skip' }
+    ],
+    outputSchema:{ 'DB_RUN_ID (backfilled)':'integer — same run_id, now with discovery columns populated' }
+  },
+
+  // --- Phase VI: ENRICH & GENERATE (5 parallel branches) ---
+  { id:'s8', num:'8', phase:'generate', name:'Exec Summary', type:'template', parallel:true,
+    meta:'Python template — signal/buyer counts \u2192 standard 2-3 sentence summary block',
+    conditionalRun:{ type:'always' },
+    inputs:['target_company','product_description','SEARCH_STRATEGY','FEATURED_BUYER_NAME','SECONDARY_BUYERS','ALL_SCORED_BUYERS'],
+    outputs:['SECTION_EXEC_SUMMARY'],
+    tools:[], module:'pipeline.py', fn:'s8_exec_summary', timeout:'20s (pool)', service:null,
+    prompt:null,
+    detail:'Generates the executive summary using a Python template. No LLM or API calls — pure string formatting with signal/buyer counts. Runs in parallel branch A of Phase VI ThreadPoolExecutor.\n\nTemplate fills: signal counts, unique buyer count, featured buyer name, secondary buyer names, SLED segments identified.',
+    qualityRules:[],
+    edgeCases:[
+      { label:'Template rendering fails', action:'Template-based — almost no failure modes. Catch-all returns empty string.', severity:'skip' }
+    ],
+    outputSchema:{ 'SECTION_EXEC_SUMMARY':'string — markdown: ## Executive Summary + 2-3 sentences with specific counts' }
+  },
+
+  { id:'s6', num:'6', phase:'generate', name:'Featured Intel Fetch', type:'api', parallel:true,
+    meta:'buyer_profile + buyer_contacts + buyer_chat (async) — 3 sub-calls on featured buyer',
+    conditionalRun:{ type:'always' },
+    inputs:['FEATURED_BUYER_ID','DISCOVERY_SIGNALS_A','DISCOVERY_SIGNALS_B'],
+    outputs:['FEAT_PROFILE','FEAT_CONTACTS','FEAT_OPPORTUNITIES','FEAT_AI_CONTEXT','FEAT_AI_CONTEXT_AVAILABLE'],
+    tools:['buyer_profile','buyer_contacts','buyer_chat (async)'], module:'tools.py', fn:'buyer_profile() || buyer_contacts() || buyer_chat()', timeout:'90s (pool) / 60s (chat)', service:'Starbridge API',
+    prompt:null,
+    detail:'3 parallel API sub-calls (buyer_profile, buyer_contacts, buyer_chat) + post-processing step that filters discovery signals to the featured buyer.\n\nbuyer_chat uses async polling (POST \u2192 poll GET every 2s) to avoid SSE streaming timeouts — it\'s an AI analysis endpoint that can take 10-90s.\n\nSub-call timeouts: buyer_profile and buyer_contacts use TIMEOUTS["s7"] (20s each — note: uses s7 key, not s6). buyer_chat uses TIMEOUTS["s6"] (90s pool) with BUYER_CHAT_MAX_WAIT (60s) for async polling.\n\nAfter API calls complete, filters DISCOVERY_SIGNALS_A + B to opportunities matching the featured buyerId \u2192 FEAT_OPPORTUNITIES.\n\nEach sub-call degrades independently — a buyer_chat timeout doesn\'t block profile or contacts. Pool uses manual pool.shutdown(wait=False, cancel_futures=True) to avoid blocking on timeouts.',
+    qualityRules:[
+      'FEAT_AI_CONTEXT must always be set (string or None) — never undefined',
+      'buyer_chat MUST use async endpoint to avoid SSE timeout (documented in MEMORY.md)'
+    ],
+    edgeCases:[
+      { label:'buyer_chat times out (>60s)', action:'FEAT_AI_CONTEXT = None. s9 relies on profile + contacts data only.', severity:'degrade' },
+      { label:'buyer_profile fails', action:'FEAT_PROFILE = None. s9 generates minimal snapshot from discovery data.', severity:'degrade' },
+      { label:'buyer_contacts fails', action:'FEAT_CONTACTS = None. s9 omits key contact section.', severity:'degrade' }
+    ],
+    outputSchema:{
+      'FEAT_PROFILE':'{ name, tags: string[], stateCode, url, address, budget, procurementScore, enrollment, population } | None',
+      'FEAT_CONTACTS':'[{ name, title, normalizedTitles: string[], email, phone, emailVerified, worksAtBuyer }] | None',
+      'FEAT_OPPORTUNITIES':'[opportunity] — filtered from DISCOVERY_SIGNALS_A + B where buyerId matches featured buyer',
+      'FEAT_AI_CONTEXT':'string — narrative strategic context from buyer_chat | None',
+      'FEAT_AI_CONTEXT_AVAILABLE':'boolean — true if buyer_chat returned content'
+    }
+  },
+
+  { id:'s9', num:'9', phase:'generate', name:'LLM: Featured Section', type:'llm', parallel:true,
+    meta:'Featured buyer writer — snapshot card + why it matters (3 bullets) + key contact + recent strategic signals',
+    conditionalRun:{ type:'always' },
+    inputs:['FEAT_PROFILE','FEAT_CONTACTS','FEAT_AI_CONTEXT','FEATURED_BUYER_NAME','FEAT_OPPORTUNITIES','product','product_description','campaign_signal'],
+    outputs:['SECTION_FEATURED'],
+    tools:['claude_cli'], module:'pipeline.py → llm.py', fn:'s9_featured_section() → llm.featured_section()', timeout:'30s', service:'Claude CLI (configurable via LLM_MODEL)',
+    prompt:'You are generating the Featured Buyer section for a Starbridge SLED intelligence report.\n\nCRITICAL: You MUST use ONLY the data provided below. Do NOT use any outside knowledge.\nThe buyer name, profile data, contacts, and opportunities below are the ONLY source of truth.\nIf a field is missing from the data, OMIT that line — do NOT guess or fill in from memory.\n\nGenerate these sub-sections in order:\n\n1. BUYER SNAPSHOT CARD — A blockquote card with:\n   - Emoji for buyer type (\ud83c\udfdb\ufe0f=HigherEducation/StateAgency, \ud83c\udfeb=SchoolDistrict/School, \ud83c\udfd9\ufe0f=City, \ud83c\udfe2=County)\n   - Buyer name and type label on first line\n   - State, City, size metric (Enrollment for education, Population for government)\n   - Procurement Score (0-100), Fiscal Year Start, Website, Phone\n   - Omit any line where data is unavailable — do NOT invent values\n\n2. WHY THIS BUYER MATTERS — Exactly 3 bullets. Each MUST:\n   - Reference a SPECIFIC signal from OPPORTUNITIES data by name/title\n   - Explain why it creates an opening for the prospect\'s product\n   - Be concrete enough for a BDR to reference on a phone call\n\n3. KEY CONTACT — Single best contact from CONTACTS data:\n   - Prefer emailVerified=true, Director+ seniority, role overlap with product\n   - Format: Name — Title — Email\n\n4. RECENT STRATEGIC SIGNALS — Top 3-5 signals from OPPORTUNITIES:\n   - Each: titled paragraph (2-4 sentences)\n   - Include dates, dollar amounts, initiative names — ONLY from provided data\n   - End each with parenthetical source: *(Board meeting, Nov 2025)*',
+    detail:'Featured buyer report writer sub-agent. Strict data-only prompt — uses ONLY provided data, no outside knowledge. Runs sequentially after s6 within branch B.\n\nFunction signature: featured_section(buyer_name, buyer_type, product, product_desc, campaign_signal, profile_json, contacts_json, opps_json, ai_context=None) — 9 params total.\n\nGenerates 4 sub-sections:\n1. Buyer Snapshot Card (emoji + type, state, size, procurement score, website, phone)\n2. Why This Buyer Matters — 3 bullets, each citing a specific initiative name, date, or dollar amount\n3. Key Contact — emailVerified=true preferred, director-level+\n4. Recent Strategic Signals — 3-5 titled paragraphs with source attribution',
+    qualityRules:[
+      'Every bullet must reference a specific initiative, date, or dollar amount — no generic claims',
+      'Key contact must have emailVerified == true (hard requirement)',
+      'No hallucinated data — every fact must come from FEAT_PROFILE, FEAT_CONTACTS, or FEAT_AI_CONTEXT'
+    ],
+    edgeCases:[
+      { label:'FEAT_PROFILE is None', action:'Minimal snapshot: buyer name + type from discovery data. Skip budget/score/website.', severity:'degrade' },
+      { label:'FEAT_CONTACTS is None', action:'Omit Key Contact sub-section. Add note: "Contact data unavailable."', severity:'degrade' },
+      { label:'No contacts with verified email', action:'Pick best available contact. Add \u26a0\ufe0f unverified note.', severity:'degrade' },
+      { label:'FEAT_AI_CONTEXT is None', action:'Rely on FEAT_PROFILE + discovery signals for signal paragraphs.', severity:'degrade' },
+      { label:'LLM times out (>30s)', action:'Generates minimal stub card with buyer name and data counts.', severity:'degrade' }
+    ],
+    outputSchema:{ 'SECTION_FEATURED':'string — markdown: ## Featured: {buyer} + snapshot card + why it matters (3 bullets) + key contact + recent strategic signals (3-5)' }
+  },
+
+  { id:'s7', num:'7', phase:'generate', name:'Secondary Intel Fetch', type:'api', parallel:true,
+    meta:'buyer_profile + buyer_contacts per secondary buyer — up to 4 buyers, ThreadPool(max_workers=4)',
+    conditionalRun:{ type:'skip', rule:'Skipped if SECONDARY_BUYERS is empty (0 selected in s4)' },
+    inputs:['SECONDARY_BUYERS'],
+    outputs:['SEC_PROFILES','SEC_CONTACTS'],
+    tools:['buyer_profile','buyer_contacts'], module:'tools.py', fn:'buyer_profile() + buyer_contacts() per buyer', timeout:'20s', service:'Starbridge API',
+    prompt:null,
+    detail:'Fetches profile + contacts for each secondary buyer in parallel. Uses ThreadPoolExecutor(max_workers=4). Lower contact page_size (20 vs 50 for featured) since we only need one contact per card. No buyer_chat for secondaries — discovery signals are sufficient.\n\nRuns in parallel branch C of Phase VI. With 4 secondaries, that\'s up to 8 API calls total.',
+    qualityRules:[],
+    edgeCases:[
+      { label:'Some profile calls fail', action:'Include available buyers, skip failures. Individual failures don\'t block others.', severity:'degrade' },
+      { label:'All secondary calls fail', action:'SEC_PROFILES and SEC_CONTACTS are empty. s10 outputs empty string.', severity:'degrade' }
+    ],
+    outputSchema:{
+      'SEC_PROFILES':'[{ buyerId, name, tags: string[], stateCode, url, address, budget, procurementScore }]',
+      'SEC_CONTACTS':'[{ buyerId, contacts: [{ name, title, email, phone, emailVerified, worksAtBuyer }] }]'
+    }
+  },
+
+  { id:'s10', num:'10', phase:'generate', name:'LLM: Secondary Cards', type:'llm', parallel:true,
+    meta:'Compact 3-4 line cards per secondary buyer — Top Signal + Key Contact + Relevance',
+    conditionalRun:{ type:'skip', rule:'Outputs empty string if SECONDARY_BUYERS is empty' },
+    inputs:['product','product_description','SEC_PROFILES','SEC_CONTACTS','SECONDARY_BUYERS'],
+    outputs:['SECTION_SECONDARY'],
+    tools:['claude_cli'], module:'pipeline.py → llm.py', fn:'s10_secondary_cards() → llm.secondary_cards()', timeout:'25s', service:'Claude CLI (configurable via LLM_MODEL)',
+    prompt:'Generate compact buyer cards for secondary SLED buyers.\n\nFor each buyer, output exactly:\n\n**[Buyer Name]** | [Type Label]\n- **Top Signal:** [Most relevant initiative, RFP, or procurement activity]\n- **Key Contact:** [Name — Title — Email] (or \'No contacts available\')\n- **Relevance:** [1 sentence on why this buyer matters for the product]\n\nKeep each card to 3-4 lines. Be specific — name initiatives, not generic claims.\nOutput as clean markdown. No meta-commentary.',
+    detail:'Generates compact cards per secondary buyer. Runs sequentially after s7 within branch C.\n\nNote: pipeline.py pre-concatenates all buyer data (profiles, contacts, signals) into a single string before calling llm.secondary_cards(product, product_desc, buyers_content). The LLM receives one flat text block, not structured inputs.\n\nPer card: **[Name]** | [Type] + Top Signal + Key Contact + Relevance (3-4 lines each).',
+    qualityRules:[
+      'Each card must include at least 1 specific signal fact (date, dollar amount, or initiative name)',
+      'Cards should be concise — 4-6 lines max per buyer'
+    ],
+    edgeCases:[
+      { label:'Some secondary profiles unavailable', action:'Generate cards with discovery data only (name + signal). Skip profile details.', severity:'degrade' },
+      { label:'No contacts for a buyer', action:'Omit Key Contact line for that card.', severity:'skip' },
+      { label:'LLM times out (>25s)', action:'Generates minimal fallback cards from scored buyer data (name + top signal).', severity:'degrade' }
+    ],
+    outputSchema:{ 'SECTION_SECONDARY':'string — markdown: ## More Buyers + one compact card per secondary buyer' }
+  },
+
+  { id:'s11', num:'11', phase:'generate', name:'CTA Section', type:'template', parallel:true,
+    meta:'Python template — Starbridge capabilities + discovery stats \u2192 marketing CTA block',
+    conditionalRun:{ type:'always' },
+    inputs:['target_company','product_description','SEARCH_STRATEGY','ALL_SCORED_BUYERS'],
+    outputs:['SECTION_CTA'],
+    tools:[], module:'pipeline.py', fn:'s11_cta', timeout:'20s (pool)', service:null,
+    prompt:null,
+    detail:'Starbridge marketing CTA section: "296K+ buyers, 107M+ records, here\'s what we can surface for you." Pure template, no LLM. Fills in: product category, SLED segments, discovery stats (buyer count, signal count by type). Runs in parallel branch D of Phase VI.',
+    qualityRules:[],
+    edgeCases:[
+      { label:'Template rendering fails', action:'Template-based — almost no failure modes. Catch-all returns empty string.', severity:'skip' }
+    ],
+    outputSchema:{ 'SECTION_CTA':'string — markdown: ## What Starbridge Can Do + discovery stats + Starbridge capabilities' }
+  },
+
+  { id:'s12', num:'12', phase:'generate', name:'Footer', type:'template', parallel:true,
+    meta:'Template fill — current date + AI availability flag selects attribution line',
+    conditionalRun:{ type:'always' },
+    inputs:['FEAT_AI_CONTEXT'],
+    outputs:['SECTION_FOOTER'],
+    tools:[], module:'pipeline.py', fn:'s12_footer', timeout:'20s (pool)', service:null,
+    prompt:null,
+    detail:'Report footer with data source attribution. Reads AI context availability (FEAT_AI_CONTEXT being set or None) to select the correct attribution line. Runs in parallel branch E — fastest branch, completes almost instantly.\n\nNote: s12 runs before s6 finishes. s13 regenerates the footer with the correct AI flag after s6 completes.',
+    qualityRules:[
+      'Footer date must match current month/year (validated deterministically in s14)',
+      'Attribution must only claim AI analysis if FEAT_AI_CONTEXT is available (not None)'
+    ],
+    edgeCases:[
+      { label:'Footer generated before s6 completes', action:'s13 regenerates footer with correct AI availability flag after all branches join.', severity:'skip' }
+    ],
+    outputSchema:{ 'SECTION_FOOTER':'string — markdown: --- divider + generated-by line + data source attribution' }
+  },
+
+  // --- Phase VII: ASSEMBLE & VALIDATE ---
+  { id:'s13', num:'13', phase:'assemble', name:'Assemble Report', type:'python',
+    meta:'Wait for all 5 branches, concatenate sections, regenerate footer with correct AI flag',
+    conditionalRun:{ type:'always' },
+    inputs:['SECTION_EXEC_SUMMARY','SECTION_FEATURED','SECTION_SECONDARY','SECTION_CTA','SECTION_FOOTER'],
+    outputs:['REPORT_MARKDOWN'],
+    tools:[], module:'pipeline.py', fn:'s13_assemble', timeout:null, service:null,
+    prompt:null,
+    detail:'Concatenates the 5 sections in fixed order with --- dividers. Regenerates footer with correct AI availability flag (s12 runs before s6 finishes, so initial footer may be wrong). Cleans up excessive newlines.\n\nSection order: Exec Summary \u2192 Featured \u2192 Secondary \u2192 CTA \u2192 Footer\n\nBranch join timing: Branch A (s8) ~fast, Branch B (s6\u2192s9) ~slowest (buyer_chat), Branch C (s7\u2192s10) ~medium, Branch D (s11) ~fast, Branch E (s12) ~instant.',
+    qualityRules:[
+      'Minimum viable report: Exec Summary + Featured + CTA + Footer must all be present',
+      'No double --- dividers or trailing dividers at end of report',
+      'Section order must be fixed — never reorder sections regardless of content'
+    ],
+    edgeCases:[
+      { label:'SECTION_SECONDARY is empty', action:'Skip that block and its surrounding dividers.', severity:'skip' },
+      { label:'Multiple sections empty', action:'Assembly still works — minimum viable set per quality rule above.', severity:'degrade' }
+    ],
+    outputSchema:{ 'REPORT_MARKDOWN':'string — full assembled markdown: Exec Summary + --- + Featured + --- + [Secondary +] --- + CTA + --- + Footer' }
+  },
+
+  { id:'s14', num:'14', phase:'assemble', name:'Validate + Fact-Check', type:['validate','llm'],
+    meta:'7 deterministic checks always run + 1 advisory LLM hallucination check',
+    conditionalRun:{ type:'always' },
+    inputs:['REPORT_MARKDOWN','FEAT_PROFILE','FEAT_CONTACTS','FEAT_OPPORTUNITIES','FEAT_AI_CONTEXT','FEATURED_BUYER_NAME','SECONDARY_BUYERS','product'],
+    outputs:['VALIDATION_RESULT','VALIDATED_REPORT_MARKDOWN'],
+    tools:['claude_cli'], module:'pipeline.py + llm.py', fn:'s14_validate() + llm.fact_check()', timeout:'30s', service:'Claude CLI (configurable via LLM_MODEL)',
+    prompt:'You are a fact-checker. Compare this intelligence report against the source data.\n\nCHECK FOR material errors ONLY:\n- Contact names or emails that do NOT appear in the CONTACTS data\n- Buyer attributes (location, enrollment, scores) that contradict PROFILE data\n- Initiative names or dollar amounts NOT found in OPPORTUNITIES or AI CONTEXT\n\nIGNORE these (they are correct):\n- ALL dates including the generation date and opportunity dates\n- Aggregate counts (total signals, total buyers) — sourced separately\n- Formatting, style, section structure\n- Any information from the AI CONTEXT section (it\'s a trusted source)\n\nRespond with ONLY: PASS or FAIL followed by a numbered list of material factual errors.',
+    detail:'7 deterministic checks (pipeline.py code) + 1 advisory LLM hallucination check (llm.fact_check()). Deterministic checks always run regardless of LLM availability.\n\nArchitecture: pipeline.py s14_validate() runs all 7 deterministic checks first, then calls llm.fact_check(buyer_name, report, source_data). llm.fact_check() returns a (bool, str) tuple. Pipeline wrapper builds the final {passed, issues[], warnings[]} dict.\n\nNote: source_data passed to LLM is a single concatenated string of profile + contacts + opportunities + ai_context + report, NOT separate structured inputs.',
+    checks:[
+      'Buyer name in report header matches FEATURED_BUYER_NAME',
+      'Product name appears in report body',
+      'Footer has current month/year date',
+      'No contact entries with both email AND phone as "\u2014"',
+      'Report length > 500 characters',
+      'Featured contact email verified against FEAT_CONTACTS data',
+      'All secondary buyer names appear in SECTION_SECONDARY'
+    ],
+    qualityRules:[
+      '7 deterministic checks always run — independent of LLM availability',
+      'LLM fact-check is advisory only — failure logged as warning, not block',
+      'llm.fact_check() returns (bool, str) tuple; pipeline builds {passed, issues[], warnings[]} dict'
+    ],
+    edgeCases:[
+      { label:'LLM fact-check times out', action:'Log warning. Deterministic checks still complete. Report proceeds.', severity:'skip' },
+      { label:'Deterministic check fails', action:'Auto-fix where possible (e.g., wrong date). Flag unfixable issues in VALIDATION_RESULT.', severity:'degrade' }
+    ],
+    outputSchema:{
+      'VALIDATION_RESULT':'{ passed: boolean, issues: string[], warnings: string[] } — built by pipeline wrapper from 7 deterministic checks + LLM advisory',
+      'VALIDATED_REPORT_MARKDOWN':'string — report markdown after any auto-fixes applied'
+    }
+  },
+
+  { id:'s15', num:'15', phase:'assemble', name:'Publish to Notion', type:'api',
+    meta:'Create Notion page via Datagen MCP SDK (mcp_Notion_notion_create_pages)',
+    conditionalRun:{ type:'always' },
+    inputs:['REPORT_MARKDOWN','FEATURED_BUYER_NAME','target_company'],
+    outputs:['NOTION_PAGE_URL'],
+    tools:['mcp_Notion_notion_create_pages'], module:'tools.py', fn:'notion_create_page()', timeout:'15s', service:'Notion MCP',
+    prompt:null,
+    detail:'Creates a Notion page via Datagen MCP SDK (mcp_Notion_notion_create_pages). Page created as a child of NOTION_PARENT_PAGE_ID (env var, default: 30a845c1-6a83-81d8-9a22-f2360c6b1093).\n\nNon-blocking — if Notion fails, report markdown is still returned in the final response JSON. NOTION_PAGE_URL will be null.\n\nNote: Notion MCP returns list not dict: [{"pages": [{"id": ..., "url": ...}]}] — extract accordingly.',
+    qualityRules:[
+      'Page title format: "{FEATURED_BUYER_NAME} — Intelligence Report for {target_company}"',
+      'NOTION_PARENT_PAGE_ID env var configures parent page (has a hardcoded default in config.py)'
+    ],
+    edgeCases:[
+      { label:'Notion API fails / rate limited', action:'Retry once after 1s. If still fails, return report without Notion URL.', severity:'degrade' },
+      { label:'Notion MCP auth expired or not connected', action:'Log error. Set NOTION_PAGE_URL = null. Report still deliverable via markdown.', severity:'degrade' }
+    ],
+    outputSchema:{ 'NOTION_PAGE_URL':'string — full Notion page URL | null if publish failed' }
+  },
+
+  { id:'s16', num:'16', phase:'assemble', name:'Save + Respond', type:'sqlite',
+    meta:'Update run to \'completed\', persist all intel + sections to DB, build final response JSON',
+    conditionalRun:{ type:'always' },
+    inputs:['REPORT_MARKDOWN','NOTION_PAGE_URL','DB_RUN_ID'],
+    outputs:['final_response'],
+    tools:['sqlite_update'], module:'pipeline.py + db.py', fn:'update_run_completed()', timeout:null, service:'SQLite',
+    prompt:null,
+    detail:'Updates run to \'completed\' status. Saves all section content, raw intel data (FEAT_PROFILE, FEAT_CONTACTS, FEAT_AI_CONTEXT, SEC_PROFILES, SEC_CONTACTS), and contacts to SQLite. Builds the final response JSON.\n\nThe notionUrl in the response JSON is what Clay posts to Slack #intent-reports as the "intel is ready" link.\n\nPersisting raw intel + individual sections enables: section-level regeneration without re-calling Starbridge APIs, A/B testing different prompts on same intel, analytics on section quality.',
+    qualityRules:[
+      'Run status must transition from \'processing\' to \'completed\' — no other final states',
+      'Response JSON must include all required fields: status, runId, notionUrl, featuredBuyer, reportMarkdown, metadata'
+    ],
+    edgeCases:[
+      { label:'SQLite update fails', action:'Log error. Return response JSON anyway — the report is the priority.', severity:'skip' },
+      { label:'NOTION_PAGE_URL is null', action:'Include null in response. Slack message uses fallback: "Report generated (Notion unavailable)."', severity:'skip' }
+    ],
+    outputSchema:{
+      'final_response':'{ status, runId, notionUrl, featuredBuyer: { id, name }, secondaryBuyers: [{ buyerId, buyerName }], reportMarkdown, metadata: { totalDiscovered, signalsFound, featuredAiChatAvailable, secondaryBuyersCount, durationMs, validationPassed, priorRunsForDomain } }'
+    }
+  }
+];
+
+// =======================================================
+// CONSTANTS & DERIVED DATA
+// =======================================================
+
+var PHASE_LABELS = {
+  source:   'I \u2014 Source',
+  input:    'II \u2014 Input Validation',
+  analyze:  'III \u2014 Target Analysis',
+  discover: 'IV \u2014 Signal Discovery',
+  select:   'V \u2014 Buyer Selection',
+  generate: 'VI \u2014 Enrich & Generate',
+  assemble: 'VII \u2014 Assemble & Validate'
+};
+
+var NODE_POSITIONS = {
+  s0:  { x: 490, y: 60 },
+  s1:  { x: 490, y: 320 },
+  s2:  { x: 490, y: 580 },
+  s3a: { x: 170, y: 850 },
+  s3b: { x: 490, y: 850 },
+  s3c: { x: 810, y: 850 },
+  s4:  { x: 490, y: 1100 },
+  s5:  { x: 490, y: 1280 },
+  s6:  { x: 60,  y: 1540 },
+  s7:  { x: 280, y: 1540 },
+  s8:  { x: 500, y: 1540 },
+  s11: { x: 720, y: 1540 },
+  s12: { x: 940, y: 1540 },
+  s9:  { x: 60,  y: 1710 },
+  s10: { x: 280, y: 1710 },
+  s13: { x: 490, y: 1970 },
+  s14: { x: 490, y: 2150 },
+  s15: { x: 490, y: 2330 },
+  s16: { x: 490, y: 2510 }
+};
+var NODE_W = 160;
+
+var SYSTEM_INPUTS = { 'CURRENT_DATE': null };
+
+var STEPS_MAP = {};
+STEPS.forEach(function(s) { STEPS_MAP[s.id] = s; });
+
+var INPUT_SOURCES = (function() {
+  var map = {};
+  STEPS.forEach(function(s) {
+    s.outputs.forEach(function(v) { map[v] = s.id; });
+  });
+  STEPS.forEach(function(s) {
+    s.inputs.forEach(function(v) {
+      if (v.indexOf('.') !== -1 && !map[v]) {
+        var base = v.split('.')[0];
+        if (map[base]) map[v] = map[base];
+      }
+    });
+  });
+  Object.keys(SYSTEM_INPUTS).forEach(function(k) { map[k] = SYSTEM_INPUTS[k]; });
+  return map;
+})();
+
+var COMPUTED_EDGES = (function() {
+  var edges = {};
+  STEPS.forEach(function(targetStep) {
+    targetStep.inputs.forEach(function(varName) {
+      var base = varName.split('.')[0];
+      var sourceId = INPUT_SOURCES[varName] || INPUT_SOURCES[base];
+      if (!sourceId) return;
+      var key = sourceId + '->' + targetStep.id;
+      if (!edges[key]) edges[key] = { source: sourceId, target: targetStep.id, variables: [] };
+      edges[key].variables.push(varName);
+    });
+  });
+  return edges;
+})();
+
+var VALIDATION_LOOPS = [
+  // Note: s14→s11 retry loop was planned but is not implemented in the current codebase.
+  // Keeping array empty until the retry mechanism is built.
+];
+
+var PHASE_ROMAN = (function() {
+  var romans = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
+  var map = {}, count = 0;
+  STEPS.forEach(function(s) {
+    if (!map[s.phase]) map[s.phase] = romans[count++];
+  });
+  return map;
+})();
+
+var PARALLEL_GROUPS = (function() {
+  var map = {}, code = 64, inGroup = false;
+  STEPS.forEach(function(s) {
+    if (s.parallel) {
+      if (!inGroup) { code++; inGroup = true; }
+      map[s.id] = String.fromCharCode(code);
+    } else {
+      inGroup = false;
+    }
+  });
+  return map;
+})();
+
+// =======================================================
+// HELPERS
+// =======================================================
+
+function escHtml(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function getTypes(s) { return Array.isArray(s.type) ? s.type : [s.type]; }
+function primaryType(s) { return getTypes(s)[0]; }
+function hasType(s, t) { return getTypes(s).includes(t); }
+function typeBadges(s) {
+  return getTypes(s).filter(function(t) { return t !== 'llm'; }).map(function(t) { return '<span class="step-badge badge-' + t + '">' + t + '</span>'; }).join(' ');
+}
+
+function renderSubAgentBadge(s) {
+  if (!hasType(s, 'llm')) return '';
+  return ' <span class="subagent-badge">claude</span>';
+}
+
+function renderIndicators(s) {
+  var html = '<div class="step-indicators">';
+  var svcMap = {'Claude CLI':'LLM','Starbridge API':'SB','Notion MCP':'Notion','SQLite':'DB'};
+  if (s.service) {
+    var svcShort = s.service;
+    Object.keys(svcMap).forEach(function(k) { if (s.service.indexOf(k) !== -1) svcShort = svcMap[k]; });
+    html += '<span class="ind ind-svc">' + svcShort + '</span>';
+  }
+  if (s.timeout) {
+    var t = s.timeout.replace(/ \(.*\)/, '');
+    html += '<span class="ind ind-timeout">' + t + '</span>';
+  }
+  if (s.tools && s.tools.length) html += '<span class="ind ind-tools">' + s.tools.length + (s.tools.length === 1 ? ' tool' : ' tools') + '</span>';
+  html += '</div>';
+  return html;
+}
+
+function phaseMatch(phase, focus) {
+  if (focus === 'discover') return ['source','input','analyze','discover','select'].indexOf(phase) !== -1;
+  if (focus === 'generate') return ['generate','assemble'].indexOf(phase) !== -1;
+  return true;
+}
+
+function getOutboundEdges(stepId) {
+  return Object.values(COMPUTED_EDGES).filter(function(e) { return e.source === stepId; })
+    .sort(function(a,b) { return STEPS.findIndex(function(s){return s.id===a.target;}) - STEPS.findIndex(function(s){return s.id===b.target;}); });
+}
+
+function getSourceLabel(src) {
+  if (!src) return 'Webhook (entry point)';
+  var s = STEPS.find(function(x) { return x.id === src; });
+  return s ? 'Step ' + s.num + ': ' + s.name : src;
+}
+
+// =======================================================
+// INPUT CHIPS (with edge hover + highlight)
+// =======================================================
+
+function renderInputChips(inputs, targetStepId) {
+  if (!inputs.length) return '<span style="color:var(--text-dim);font-size:11px">None (entry point)</span>';
+  var groups = {};
+  inputs.forEach(function(name) {
+    var base = name.split('.')[0];
+    var src = INPUT_SOURCES[name] || INPUT_SOURCES[base] || null;
+    if (!groups[src]) groups[src] = [];
+    groups[src].push(name);
+  });
+
+  var html = '';
+  var order = [null].concat(STEPS.map(function(s) { return s.id; }));
+  var sortedKeys = Object.keys(groups).sort(function(a, b) {
+    return order.indexOf(a === 'null' ? null : a) - order.indexOf(b === 'null' ? null : b);
+  });
+
+  sortedKeys.forEach(function(src) {
+    var label = getSourceLabel(src === 'null' ? null : src);
+    var stepId = (src && src !== 'null') ? src : null;
+    var clickAttr = stepId ? ' onclick="navToStep(\'' + stepId + '\')"' : '';
+    var linkClass = stepId ? ' src-link' : '';
+    var edgeKey = stepId && targetStepId ? stepId + '->' + targetStepId : '';
+    var hoverAttr = edgeKey ? ' onmouseenter="highlightEdge(\'' + edgeKey + '\')" onmouseleave="unhighlightEdge()"' : '';
+
+    html += '<div class="input-group" data-edge="' + edgeKey + '"' + hoverAttr + '>';
+    html += '<div class="input-group-label">from <span class="' + linkClass + '"' + clickAttr + '>' + label + '</span></div>';
+    html += '<div class="data-flow">';
+    groups[src].forEach(function(n) { html += '<span class="data-chip chip-in">' + n + '</span>'; });
+    html += '</div></div>';
+  });
+  return html;
+}
+
+// =======================================================
+// FEEDS INTO (with validation loops + edge hover)
+// =======================================================
+
+function renderFeedsInto(stepId) {
+  var outbound = getOutboundEdges(stepId);
+  var loops = VALIDATION_LOOPS.filter(function(l) { return l.from === stepId || l.to === stepId; });
+  if (!outbound.length && !loops.length) return '';
+  var html = '<div class="detail-section"><h3><span class="dot" style="background:var(--orange)"></span>Feeds Into</h3>';
+  // Validation loops first
+  loops.forEach(function(loop) {
+    var otherId = loop.from === stepId ? loop.to : loop.from;
+    var other = STEPS.find(function(x) { return x.id === otherId; });
+    if (!other) return;
+    var loopKey = loop.from + '<->' + loop.to;
+    var clickAttr = ' onclick="navToStep(\'' + otherId + '\')"';
+    html += '<div class="input-group validation-loop-row" data-edge="' + loopKey + '" onmouseenter="highlightEdge(\'' + loopKey + '\')" onmouseleave="unhighlightEdge()">';
+    html += '<div class="input-group-label"><span class="validation-loop-badge">\u21c4 validation loop</span> with <span class="src-link"' + clickAttr + '>Step ' + other.num + ': ' + other.name + '</span></div>';
+    html += '<div style="color:var(--text-dim);font-size:11px;margin-top:2px">' + loop.label + '</div>';
+    html += '</div>';
+  });
+  // Normal outbound edges
+  outbound.forEach(function(edge) {
+    var target = STEPS.find(function(x) { return x.id === edge.target; });
+    if (!target) return;
+    var clickAttr = ' onclick="navToStep(\'' + edge.target + '\')"';
+    html += '<div class="input-group" data-edge="' + edge.source + '->' + edge.target + '" onmouseenter="highlightEdge(\'' + edge.source + '->' + edge.target + '\')" onmouseleave="unhighlightEdge()">';
+    html += '<div class="input-group-label">to <span class="src-link"' + clickAttr + '>Step ' + target.num + ': ' + target.name + '</span></div>';
+    if (edge.variables.length) {
+      html += '<div class="data-flow">';
+      edge.variables.forEach(function(v) { html += '<span class="data-chip chip-feeds">' + v + '</span>'; });
+      html += '</div>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+// =======================================================
+// EDGE TOOLTIPS & HIGHLIGHTING
+// =======================================================
+
+function showEdgeTooltip(event, edgeKey) {
+  var tooltip = document.getElementById('edgeTooltip');
+  var html = '';
+
+  var loop = VALIDATION_LOOPS.find(function(l) { return l.from + '<->' + l.to === edgeKey; });
+  if (loop) {
+    var fromStep = STEPS.find(function(s) { return s.id === loop.from; });
+    var toStep = STEPS.find(function(s) { return s.id === loop.to; });
+    if (!fromStep || !toStep) return;
+    html += '<div style="color:#ff69b4;font-weight:600;font-size:11px;margin-bottom:6px">\u21c4 Validation Loop</div>';
+    html += '<div style="color:var(--text-bright);font-size:10px;margin-bottom:6px">Step ' + fromStep.num + ' \u21c4 Step ' + toStep.num + '</div>';
+    html += '<div style="color:var(--text-dim);font-size:10px">' + loop.label + '</div>';
+  } else {
+    var edge = COMPUTED_EDGES[edgeKey];
+    if (!edge) return;
+    var sourceStep = STEPS.find(function(s) { return s.id === edge.source; });
+    var targetStep = STEPS.find(function(s) { return s.id === edge.target; });
+    if (!sourceStep || !targetStep) return;
+
+    html += '<div style="color:var(--text-bright);font-weight:600;font-size:11px;margin-bottom:6px">';
+    html += 'Step ' + sourceStep.num + ' \u2192 Step ' + targetStep.num;
+    html += '</div>';
+    html += '<div style="color:var(--text-dim);font-size:10px;margin-bottom:6px">';
+    html += sourceStep.name + ' \u2192 ' + targetStep.name;
+    html += '</div>';
+
+    if (edge.variables.length) {
+      html += '<div class="data-flow" style="gap:3px">';
+      edge.variables.forEach(function(v) {
+        html += '<span class="data-chip chip-in" style="font-size:9px;padding:2px 6px">' + v + '</span>';
+      });
+      html += '</div>';
+    }
+  }
+
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  tooltip.style.left = Math.min(event.clientX + 12, window.innerWidth - 300) + 'px';
+  tooltip.style.top = (event.clientY - 10) + 'px';
+}
+
+function hideEdgeTooltip() {
+  document.getElementById('edgeTooltip').style.display = 'none';
+}
+
+function highlightEdge(edgeKey) {
+  state.highlightedEdge = edgeKey;
+  var isLoop = edgeKey.indexOf('<->') !== -1;
+  if (isLoop) {
+    var parts = edgeKey.split('<->');
+    var visPath = document.getElementById('epath-vloop-' + parts[0] + '-' + parts[1]);
+    if (visPath) { visPath.setAttribute('stroke', '#ff69b4'); visPath.setAttribute('stroke-width', '3'); }
+  } else {
+    var visPath = document.getElementById('epath-' + edgeKey.replace('->','-'));
+    if (visPath) { visPath.setAttribute('stroke', '#58a6ff'); visPath.setAttribute('stroke-width', '3'); }
+    var visArrow = document.getElementById('earrow-' + edgeKey.replace('->','-'));
+    if (visArrow) visArrow.setAttribute('fill', '#58a6ff');
+  }
+  document.querySelectorAll('[data-edge]').forEach(function(el) {
+    el.classList.toggle('edge-highlighted', el.getAttribute('data-edge') === edgeKey);
+  });
+}
+
+function unhighlightEdge() {
+  if (state.highlightedEdge) {
+    var isLoop = state.highlightedEdge.indexOf('<->') !== -1;
+    if (isLoop) {
+      var parts = state.highlightedEdge.split('<->');
+      var loop = VALIDATION_LOOPS.find(function(l) { return l.from === parts[0] && l.to === parts[1]; });
+      if (loop) {
+        var isActive = state.selectedStep === loop.from || state.selectedStep === loop.to;
+        var color = isActive ? 'rgba(255,105,180,0.8)' : 'rgba(255,105,180,0.35)';
+        var width = isActive ? 2.5 : 1.5;
+        var visPath = document.getElementById('epath-vloop-' + loop.from + '-' + loop.to);
+        if (visPath) { visPath.setAttribute('stroke', color); visPath.setAttribute('stroke-width', String(width)); }
+      }
+    } else {
+      var edge = COMPUTED_EDGES[state.highlightedEdge];
+      if (edge) {
+        var isActive = state.selectedStep === edge.source || state.selectedStep === edge.target;
+        var color = isActive ? '#58a6ff' : 'rgba(48,54,61,0.45)';
+        var width = isActive ? 2.5 : 1.5;
+        var visPath = document.getElementById('epath-' + state.highlightedEdge.replace('->','-'));
+        if (visPath) { visPath.setAttribute('stroke', color); visPath.setAttribute('stroke-width', String(width)); }
+        var visArrow = document.getElementById('earrow-' + state.highlightedEdge.replace('->','-'));
+        if (visArrow) visArrow.setAttribute('fill', color);
+      }
+    }
+  }
+  state.highlightedEdge = null;
+  document.querySelectorAll('.edge-highlighted').forEach(function(el) {
+    el.classList.remove('edge-highlighted');
+  });
+}
+
+function selectEdgeNode(edgeKey) {
+  var edge = COMPUTED_EDGES[edgeKey];
+  if (!edge) return;
+  if (state.view === 'diagram') selectDiagramNode(edge.target);
+}
+
+// =======================================================
+// LIST VIEW
+// =======================================================
+
+function renderPipeline() {
+  var el = document.getElementById('pipeline');
+  var html = '';
+  var lastPhase = '';
+  var inParallel = false;
+
+  STEPS.forEach(function(s) {
+    if (s.phase !== lastPhase) {
+      if (inParallel) { html += '</div>'; inParallel = false; }
+      if (lastPhase) html += '<div class="connector"></div>';
+      html += '<div class="phase-label">' + PHASE_LABELS[s.phase] + '</div>';
+      lastPhase = s.phase;
+    }
+    if (s.parallel && !inParallel) { html += '<div class="parallel-group">'; inParallel = true; }
+    if (!s.parallel && inParallel) { html += '</div>'; inParallel = false; }
+
+    var dimmed = state.focusPhase !== 'all' && !phaseMatch(s.phase, state.focusPhase);
+    var selected = state.selectedStep === s.id;
+    html += '<div class="step' + (selected?' selected':'') + (dimmed?' dimmed':'') + '" onclick="selectStep(\'' + s.id + '\')" id="lstep-' + s.id + '">';
+    html += '<div class="step-num">' + typeBadges(s) + renderSubAgentBadge(s) + ' Step ' + s.num + '</div>';
+    html += '<div class="step-name">' + s.name + '</div>';
+    html += renderIndicators(s);
+    html += '<div class="step-meta">' + s.meta + '</div>';
+    html += '</div>';
+  });
+
+  if (inParallel) html += '</div>';
+  el.innerHTML = html;
+  if (state.selectedStep) {
+    var el2 = document.getElementById('lstep-' + state.selectedStep);
+    if (el2) el2.scrollIntoView({ block:'nearest' });
+  }
+}
+
+// =======================================================
+// DETAIL PANEL (shared rendering for list + floating)
+// =======================================================
+
+function buildDetailHtml(id, isFloating) {
+  var s = STEPS.find(function(x) { return x.id === id; });
+  if (!s) return '';
+
+  var html = '';
+  if (isFloating) {
+    html += '<button class="detail-close" onclick="closeDiagramDetail()">&times;</button>';
+  }
+  html += '<h2 style="font-size:' + (isFloating?'16':'18') + 'px;font-weight:600;color:var(--text-bright);margin-bottom:4px;' + (isFloating?'padding-right:30px':'') + '">Step ' + s.num + ': ' + s.name + '</h2>';
+  html += '<div style="font-size:' + (isFloating?'12':'13') + 'px;color:var(--text-dim);margin-bottom:' + (isFloating?'16':'20') + 'px">' + s.meta + '</div>';
+
+  // Conditional run
+  if (s.conditionalRun) {
+    var cr = s.conditionalRun;
+    var crLabel = cr.type === 'always' ? 'Always runs' : cr.type === 'stop' ? 'Hard stop' : cr.type === 'skip' ? 'Conditional skip' : 'Branches';
+    var crText = cr.rule ? crLabel + ' \u2014 ' + cr.rule : crLabel;
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--text-bright)"></span>Conditional Run</h3>';
+    html += '<div class="conditional-run conditional-run-' + cr.type + '">' + crText + '</div>';
+    html += '</div>';
+  }
+
+  // Implementation
+  html += '<div class="detail-section"><h3><span class="dot" style="background:var(--text-dim)"></span>Implementation</h3>';
+  html += '<div class="impl-row">';
+  html += '<span class="impl-tag">' + s.module + '</span>';
+  html += '<span class="impl-tag"><span>' + s.fn + '</span></span>';
+  if (s.timeout) html += '<span class="impl-tag">timeout: ' + s.timeout + '</span>';
+  if (s.service) html += '<span class="impl-tag">service: ' + s.service + '</span>';
+  html += '</div></div>';
+
+  // Tools
+  if (s.tools && s.tools.length) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--cyan)"></span>Tool Calls</h3><div class="data-flow">';
+    s.tools.forEach(function(t) { html += '<span class="data-chip chip-tool">' + t + '</span>'; });
+    html += '</div></div>';
+  }
+
+  // Data In
+  html += '<div class="detail-section"><h3><span class="dot" style="background:var(--blue)"></span>Data In</h3>';
+  html += renderInputChips(s.inputs, s.id);
+  html += '</div>';
+
+  // Data Out
+  html += '<div class="detail-section"><h3><span class="dot" style="background:var(--green)"></span>Data Out</h3>';
+  if (s.outputSchema) {
+    html += '<div class="output-schema">';
+    s.outputs.forEach(function(d) {
+      var schema = s.outputSchema[d];
+      if (!schema) return;
+      var isComplex = schema.indexOf('{') !== -1 || schema.indexOf('[') !== -1;
+      html += '<div class="schema-row">';
+      html += '<span class="schema-name">' + d + '</span>';
+      if (isComplex) {
+        html += '<pre class="schema-type">' + escHtml(schema) + '</pre>';
+      } else {
+        html += '<span class="schema-type-inline">' + escHtml(schema) + '</span>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<div class="data-flow">';
+    s.outputs.forEach(function(d) { html += '<span class="data-chip chip-out">' + d + '</span>'; });
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Feeds Into
+  html += renderFeedsInto(s.id);
+
+  // Prompt / Detail blocks (v2 hybrid-aware logic)
+  var pt = primaryType(s);
+  var isHybrid = getTypes(s).length > 1;
+
+  if (isHybrid && s.detail) {
+    var detailLabel = pt === 'tool' ? 'Tool Logic' : pt === 'validate' ? 'Validation Logic' : pt === 'logic' ? 'Logic' : pt === 'sqlite' ? 'DB Operations' : 'Detail';
+    var detailColor = pt === 'validate' ? 'var(--red)' : pt === 'sqlite' ? 'var(--sqlite-border)' : 'var(--orange)';
+    html += '<div class="detail-section"><h3><span class="dot" style="background:' + detailColor + '"></span>' + detailLabel + '</h3>';
+    html += '<div class="prompt-block">' + escHtml(s.detail) + '</div></div>';
+  }
+  if (hasType(s, 'llm') && s.prompt) {
+    var prompt = state.editedPrompts[s.id] || s.prompt;
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--purple)"></span>LLM Prompt</h3>';
+    html += '<div class="edit-hint">Click to edit this prompt. Changes update the copy output below.</div>';
+    html += '<div class="prompt-block"><div class="editable" contenteditable="true" id="promptEdit-' + s.id + '" oninput="onPromptEdit(\'' + s.id + '\')">' + escHtml(prompt) + '</div></div></div>';
+  }
+  if (!hasType(s, 'llm') && s.prompt) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--purple)"></span>Prompt</h3>';
+    html += '<div class="prompt-block">' + escHtml(s.prompt) + '</div></div>';
+  }
+  if (!isHybrid && s.detail) {
+    var dLabel = pt === 'template' ? 'Template Logic' : pt === 'llm' ? 'LLM Sub-Agent Logic' : pt === 'api' ? 'API Call Detail' : pt === 'sqlite' ? 'DB Operations' : pt === 'python' ? 'Step Detail' : 'Logic';
+    var dColor = pt === 'llm' ? 'var(--purple)' : pt === 'api' ? 'var(--cyan)' : pt === 'sqlite' ? 'var(--sqlite-border)' : pt === 'template' ? 'var(--blue)' : 'var(--orange)';
+    html += '<div class="detail-section"><h3><span class="dot" style="background:' + dColor + '"></span>' + dLabel + '</h3>';
+    html += '<div class="prompt-block">' + escHtml(s.detail) + '</div></div>';
+  }
+
+  // Scoring weights (s4 only)
+  if (s.scoring) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--orange)"></span>Scoring Weights</h3>';
+    Object.entries(s.scoring).forEach(function(entry) {
+      var k = entry[0], v = entry[1];
+      html += '<div class="scoring-bar"><span class="scoring-bar-label">' + k.replace(/_/g,' ') + '</span>';
+      html += '<div class="scoring-bar-track"><div class="scoring-bar-fill" style="width:' + (v*4) + '%"></div></div>';
+      html += '<span class="scoring-bar-val">' + v + '%</span></div>';
+    });
+    html += '</div>';
+  }
+
+  // Validation checks (s14)
+  if (s.checks) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--red)"></span>Validation Checks (' + s.checks.length + ')</h3>';
+    s.checks.forEach(function(c, i) {
+      var isAdvisory = c.indexOf('advisory') !== -1;
+      html += '<div class="check-item' + (isAdvisory?' check-advisory':'') + '">';
+      html += '<span>' + (i+1) + '.</span><span>' + c + '</span></div>';
+    });
+    html += '</div>';
+  }
+
+  // Quality rules
+  if (s.qualityRules && s.qualityRules.length) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--red)"></span>Quality Rules</h3>';
+    s.qualityRules.forEach(function(r) { html += '<div class="quality-rule">' + r + '</div>'; });
+    html += '</div>';
+  }
+
+  // Edge cases
+  if (s.edgeCases && s.edgeCases.length) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--orange)"></span>Errors &amp; Fallbacks</h3>';
+    s.edgeCases.forEach(function(ec) {
+      var sev = ec.severity || 'degrade';
+      var sevLabel = sev==='stop'?'STOP':sev==='skip'?'SKIP':'DEGRADE';
+      html += '<div class="edge-case ec-' + sev + '"><span class="ec-severity">' + sevLabel + '</span>';
+      html += '<span class="ec-label">' + ec.label + '</span>';
+      html += '<span class="ec-action">' + ec.action + '</span></div>';
+    });
+    html += '</div>';
+  }
+
+  return html;
+}
+
+function renderDetail(id) {
+  var el = document.getElementById('detail');
+  if (!id) { el.innerHTML = '<div class="detail-empty">Click a step to see details</div>'; return; }
+  el.innerHTML = buildDetailHtml(id, false);
+}
+
+function selectStep(id) {
+  state.selectedStep = id;
+  if (state.view === 'list') { renderPipeline(); renderDetail(id); }
+  updatePrompt();
+}
+
+function navToStep(id) {
+  if (state.view === 'diagram') { selectDiagramNode(id); }
+  else { selectStep(id); }
+}
+
+// =======================================================
+// MONITOR VIEW (live pipeline execution)
+// =======================================================
+
+var MONITOR_PRESETS = {
+  vmock: {
+    target_company: 'VMock',
+    target_domain: 'vmock.com',
+    product_description: 'AI-powered career services platform for universities \u2014 resume reviews, interview prep, career readiness assessments, and employer matching',
+    campaign_signal: 'career services technology',
+    campaign_id: 'test_vmock_001',
+    prospect_name: 'Test Prospect',
+    prospect_email: 'test@vmock.com'
+  }
+};
+
+// Step execution order for "running" inference
+var STEP_ORDER = ['s0','s1','s2','s3a','s3b','s3c','s4','s5','s8','s6','s9','s7','s10','s11','s12','s13','s14','s15','s16'];
+var PARALLEL_PHASE_A = ['s3a','s3b','s3c'];
+var PARALLEL_PHASE_B = ['s8','s6','s9','s7','s10','s11','s12'];
+var SEQ_BEFORE_A = 's2';
+var SEQ_BEFORE_B = 's5';
+var SEQ_AFTER_A = 's4';
+var SEQ_AFTER_B = 's13';
+
+var monitorState = {
+  runId: null,
+  pollInterval: null,
+  lastAudit: [],
+  lastRun: null,
+  activeTab: 'run',
+  expandedSteps: {},
+  moreFieldsVisible: false
+};
+
+function renderMonitor() {
+  var wrap = document.getElementById('monitorWrap');
+  var html = '<div class="monitor-left">';
+
+  // ── Starting Point Form ──
+  html += '<div class="webhook-form">';
+  html += '<h3>Starting Point</h3>';
+  html += '<div id="monitorMsg"></div>';
+
+  html += '<div class="form-row"><label class="form-label form-required">Target Company</label>';
+  html += '<input class="form-input" id="mf-target_company" placeholder="e.g. VMock"></div>';
+
+  html += '<div class="form-row"><label class="form-label form-required">Target Domain</label>';
+  html += '<input class="form-input" id="mf-target_domain" placeholder="e.g. vmock.com">';
+  html += '<div class="form-hint">At least one of Company or Domain required</div></div>';
+
+  html += '<div class="form-row"><label class="form-label">Product Description</label>';
+  html += '<textarea class="form-textarea" id="mf-product_description" placeholder="What does this company sell?"></textarea></div>';
+
+  html += '<div class="form-row"><label class="form-label">Campaign Signal</label>';
+  html += '<input class="form-input" id="mf-campaign_signal" placeholder="e.g. career services technology"></div>';
+
+  html += '<div id="moreFields" class="more-fields">';
+  html += '<div class="form-row"><label class="form-label">Campaign ID</label>';
+  html += '<input class="form-input" id="mf-campaign_id"></div>';
+  html += '<div class="form-row"><label class="form-label">Prospect Name</label>';
+  html += '<input class="form-input" id="mf-prospect_name"></div>';
+  html += '<div class="form-row"><label class="form-label">Prospect Email</label>';
+  html += '<input class="form-input" id="mf-prospect_email" type="email"></div>';
+  html += '</div>';
+
+  html += '<div class="form-actions">';
+  html += '<button class="btn-run" id="btnRun" onclick="submitPipeline()">Run Pipeline</button>';
+  html += '<button class="btn-preset" onclick="loadPreset(\'vmock\')">VMock Preset</button>';
+  html += '<button class="btn-more" onclick="toggleMoreFields()">More Fields</button>';
+  html += '</div>';
+
+  html += '<div class="run-selector-row">';
+  html += '<label>Past Runs:</label>';
+  html += '<select class="run-selector" id="runSelector" onchange="loadPastRun(this.value)"><option value="">Select a run...</option></select>';
+  html += '</div>';
+
+  html += '</div>';
+
+  // ── Step Tracker ──
+  html += '<div class="monitor-tracker">';
+  html += '<h3>Step Progress</h3>';
+  html += '<div id="trackerSteps">';
+  html += renderTrackerSteps([], null, null);
+  html += '</div></div>';
+
+  html += '</div>'; // end monitor-left
+
+  // ── Data Viewer ──
+  html += '<div class="monitor-right">';
+  html += '<div class="data-viewer">';
+  html += '<div class="data-tabs">';
+  html += '<button class="data-tab active" onclick="switchDataTab(\'run\')">Run</button>';
+  html += '<button class="data-tab" onclick="switchDataTab(\'discoveries\')">Discoveries</button>';
+  html += '<button class="data-tab" onclick="switchDataTab(\'contacts\')">Contacts</button>';
+  html += '<button class="data-tab" onclick="switchDataTab(\'audit_log\')">Audit Log</button>';
+  html += '</div>';
+  html += '<div class="data-panel" id="dataPanel"><div class="data-empty">No run selected</div></div>';
+  html += '</div>';
+  html += '</div>'; // end monitor-right
+
+  wrap.innerHTML = html;
+  loadRunSelector();
+}
+
+function stepIdFromAudit(auditStep) {
+  // Map audit step names like "s3a_primary_search" → "s3a", "s14_validate" → "s14"
+  for (var i = 0; i < STEP_ORDER.length; i++) {
+    if (auditStep === STEP_ORDER[i] || auditStep.indexOf(STEP_ORDER[i] + '_') === 0) return STEP_ORDER[i];
+  }
+  return null;
+}
+
+function renderTrackerSteps(auditEntries, runStatus, runData) {
+  // Group audit entries by step ID
+  var stepEntries = {};
+  (auditEntries || []).forEach(function(a) {
+    var sid = stepIdFromAudit(a.step);
+    if (!sid) return;
+    if (!stepEntries[sid]) stepEntries[sid] = [];
+    stepEntries[sid].push(a);
+  });
+
+  // Build set of completed steps (a step is "done" if it has any audit entries)
+  var completedSteps = {};
+  Object.keys(stepEntries).forEach(function(k) { completedSteps[k] = true; });
+
+  var pipelineActive = runStatus === 'processing';
+
+  // Pre-compute phase durations
+  var phaseDurations = {};
+  STEPS.forEach(function(s) {
+    var ents = stepEntries[s.id] || [];
+    var dur = 0;
+    ents.forEach(function(a) { if (a.duration_seconds != null) dur += a.duration_seconds; });
+    if (!phaseDurations[s.phase]) phaseDurations[s.phase] = 0;
+    phaseDurations[s.phase] += dur;
+  });
+
+  var html = '';
+  var lastPhase = '';
+
+  STEPS.forEach(function(s) {
+    if (s.phase !== lastPhase) {
+      var pDur = phaseDurations[s.phase];
+      var phaseHasEntries = STEPS.some(function(st) { return st.phase === s.phase && (stepEntries[st.id] || []).length > 0; });
+      var pDurText = phaseHasEntries ? '<span class="tracker-phase-dur">' + pDur.toFixed(2) + 's</span>' : '';
+      html += '<div class="tracker-phase"><div class="tracker-phase-label">' + PHASE_LABELS[s.phase] + pDurText + '</div></div>';
+      lastPhase = s.phase;
+    }
+
+    var entries = stepEntries[s.id] || [];
+    var statusClass = 'st-pending';
+    var statusIcon = '\u25cb'; // ○
+    var durText = '';
+
+    if (entries.length) {
+      // Aggregate: mixed (success+failure) → warning, all failure → failed, any warning/timeout/skipped → warning
+      var hasFailure = entries.some(function(a) { return a.status === 'failure'; });
+      var hasSuccess = entries.some(function(a) { return a.status === 'success'; });
+      var hasWarning = entries.some(function(a) { return a.status === 'timeout' || a.status === 'warning' || a.status === 'skipped'; });
+      if (hasFailure && hasSuccess) { statusClass = 'st-warning'; statusIcon = '\u26a0'; }
+      else if (hasFailure) { statusClass = 'st-failed'; statusIcon = '\u2717'; }
+      else if (hasWarning) { statusClass = 'st-warning'; statusIcon = '\u26a0'; }
+      else { statusClass = 'st-completed'; statusIcon = '\u2713'; }
+      // Total duration across all entries for this step
+      var totalDur = 0; var hasDur = false;
+      entries.forEach(function(a) { if (a.duration_seconds != null) { totalDur += a.duration_seconds; hasDur = true; } });
+      if (hasDur) durText = totalDur.toFixed(2) + 's';
+    } else if (pipelineActive) {
+      // Infer running state
+      var isRunning = false;
+      if (PARALLEL_PHASE_A.indexOf(s.id) !== -1) {
+        isRunning = !!completedSteps[SEQ_BEFORE_A];
+      } else if (PARALLEL_PHASE_B.indexOf(s.id) !== -1) {
+        isRunning = !!completedSteps[SEQ_BEFORE_B];
+      } else if (s.id === SEQ_AFTER_A) {
+        isRunning = PARALLEL_PHASE_A.every(function(id) { return !!completedSteps[id]; });
+      } else if (s.id === SEQ_AFTER_B) {
+        isRunning = PARALLEL_PHASE_B.every(function(id) { return !!completedSteps[id]; });
+      } else {
+        // Sequential: running if all prior sequential steps are done
+        var idx = STEP_ORDER.indexOf(s.id);
+        if (idx === 0) {
+          isRunning = true;
+        } else {
+          var priorDone = true;
+          for (var i = idx - 1; i >= 0; i--) {
+            var priorId = STEP_ORDER[i];
+            // Skip parallel siblings
+            if (PARALLEL_PHASE_A.indexOf(priorId) !== -1 && PARALLEL_PHASE_A.indexOf(s.id) === -1) {
+              if (!PARALLEL_PHASE_A.every(function(id) { return !!completedSteps[id]; })) { priorDone = false; break; }
+              break;
+            }
+            if (PARALLEL_PHASE_B.indexOf(priorId) !== -1 && PARALLEL_PHASE_B.indexOf(s.id) === -1) {
+              if (!PARALLEL_PHASE_B.every(function(id) { return !!completedSteps[id]; })) { priorDone = false; break; }
+              break;
+            }
+            if (!completedSteps[priorId]) { priorDone = false; break; }
+          }
+          isRunning = priorDone;
+        }
+      }
+      if (isRunning) { statusClass = 'st-running'; statusIcon = '\u25cf'; }
+    }
+
+    var expanded = monitorState.expandedSteps[s.id];
+    html += '<div class="tracker-step ' + statusClass + '" onclick="toggleTrackerExpand(\'' + s.id + '\')">';
+    html += '<span class="tracker-step-id">' + s.id + '</span>';
+    html += '<span class="tracker-step-name">' + s.name + '</span>';
+    html += '<span class="tracker-step-status">' + statusIcon + '</span>';
+    html += '<span class="tracker-step-dur">' + durText + '</span>';
+    html += '</div>';
+
+    // Substeps (expanded)
+    if (expanded && entries.length) {
+      html += '<div class="tracker-substeps">';
+      entries.forEach(function(sub) {
+        var subDur = sub.duration_seconds != null ? sub.duration_seconds.toFixed(2) + 's' : '';
+        var subIcon = sub.status === 'success' ? '\u2713' : sub.status === 'failure' ? '\u2717' : '\u26a0';
+        var subClass = sub.status === 'success' ? 'st-completed' : sub.status === 'failure' ? 'st-failed' : 'st-warning';
+        var subName = sub.step.indexOf(s.id + '_') === 0 ? sub.step.replace(s.id + '_', '') : sub.step;
+        html += '<div class="tracker-substep ' + subClass + '"><span>' + subIcon + '</span><span>' + subName + '</span><span>' + subDur + '</span>';
+        if (sub.message) html += '<span style="opacity:0.6"> \u2014 ' + escHtml(sub.message).slice(0, 80) + '</span>';
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+  });
+
+  // Total pipeline duration (wall-clock from run timestamps)
+  var hasAnyEntries = Object.keys(stepEntries).length > 0;
+  if (hasAnyEntries) {
+    var statusText = runStatus === 'completed' ? 'completed' : runStatus === 'failed' ? 'failed' : 'in progress';
+    var wallClock = null;
+    if (runData && runData.created_at) {
+      var end = runData.completed_at ? new Date(runData.completed_at) : new Date();
+      wallClock = (end - new Date(runData.created_at)) / 1000;
+    }
+    var durStr = wallClock != null ? wallClock.toFixed(1) + 's' : '...';
+    html += '<div class="tracker-total"><span>Total</span><span>' + durStr + ' (' + statusText + ')</span></div>';
+  }
+
+  return html;
+}
+
+function toggleTrackerExpand(stepId) {
+  monitorState.expandedSteps[stepId] = !monitorState.expandedSteps[stepId];
+  var el = document.getElementById('trackerSteps');
+  if (el && monitorState.lastAudit) {
+    el.innerHTML = renderTrackerSteps(monitorState.lastAudit, monitorState.lastRun ? monitorState.lastRun.status : null, monitorState.lastRun);
+  }
+}
+
+// ── Form actions ──
+
+function loadPreset(name) {
+  var p = MONITOR_PRESETS[name];
+  if (!p) return;
+  var fields = ['target_company','target_domain','product_description','campaign_signal','campaign_id','prospect_name','prospect_email'];
+  fields.forEach(function(f) {
+    var el = document.getElementById('mf-' + f);
+    if (el) el.value = p[f] || '';
+  });
+  // Show more fields if preset has them
+  if (p.campaign_id || p.prospect_name || p.prospect_email) {
+    monitorState.moreFieldsVisible = true;
+    var mf = document.getElementById('moreFields');
+    if (mf) mf.classList.add('visible');
+  }
+}
+
+function toggleMoreFields() {
+  monitorState.moreFieldsVisible = !monitorState.moreFieldsVisible;
+  var mf = document.getElementById('moreFields');
+  if (mf) mf.classList.toggle('visible', monitorState.moreFieldsVisible);
+}
+
+function showMonitorMsg(text, type) {
+  var el = document.getElementById('monitorMsg');
+  if (el) el.innerHTML = '<div class="monitor-msg monitor-msg-' + (type || 'info') + '">' + escHtml(text) + '</div>';
+}
+
+function clearMonitorMsg() {
+  var el = document.getElementById('monitorMsg');
+  if (el) el.innerHTML = '';
+}
+
+function submitPipeline() {
+  var fields = ['target_company','target_domain','product_description','campaign_signal','campaign_id','prospect_name','prospect_email'];
+  var webhook = {};
+  fields.forEach(function(f) {
+    var el = document.getElementById('mf-' + f);
+    if (el && el.value.trim()) webhook[f] = el.value.trim();
+  });
+
+  if (!webhook.target_company && !webhook.target_domain) {
+    showMonitorMsg('At least one of Target Company or Target Domain is required.', 'error');
+    return;
+  }
+
+  clearMonitorMsg();
+  var btn = document.getElementById('btnRun');
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+
+  fetch('/api/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(webhook)
+  })
+  .then(function(r) {
+    if (r.status === 409) { showMonitorMsg('Pipeline already running. Wait for it to finish.', 'error'); btn.disabled = false; btn.textContent = 'Run Pipeline'; return null; }
+    if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Server error'); });
+    return r.json();
+  })
+  .then(function(data) {
+    if (!data) return;
+    btn.textContent = 'Running...';
+    if (data.run_id) {
+      monitorState.runId = data.run_id;
+      startPolling(data.run_id);
+      showMonitorMsg('Pipeline started \u2014 Run #' + data.run_id, 'info');
+    } else {
+      showMonitorMsg('Pipeline started but run_id not yet available. Refresh in a moment.', 'info');
+      btn.disabled = false;
+      btn.textContent = 'Run Pipeline';
+    }
+  })
+  .catch(function(err) {
+    showMonitorMsg(err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Run Pipeline';
+  });
+}
+
+// ── Polling ──
+
+function startPolling(runId) {
+  stopPolling();
+  monitorState.runId = runId;
+  pollStatus();
+  monitorState.pollInterval = setInterval(pollStatus, 1500);
+}
+
+function stopPolling() {
+  if (monitorState.pollInterval) {
+    clearInterval(monitorState.pollInterval);
+    monitorState.pollInterval = null;
+  }
+}
+
+function pollStatus() {
+  if (!monitorState.runId) return;
+  fetch('/api/status/' + monitorState.runId)
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    monitorState.lastAudit = data.audit_log || [];
+    monitorState.lastRun = data.run || {};
+
+    // Update tracker
+    var el = document.getElementById('trackerSteps');
+    if (el) el.innerHTML = renderTrackerSteps(monitorState.lastAudit, monitorState.lastRun.status, monitorState.lastRun);
+
+    // Update data panel if on Run tab
+    if (monitorState.activeTab === 'run') renderRunTab(monitorState.lastRun);
+
+    // Stop polling if done
+    if (monitorState.lastRun.status === 'completed' || monitorState.lastRun.status === 'failed') {
+      stopPolling();
+      var btn = document.getElementById('btnRun');
+      if (btn) { btn.disabled = false; btn.textContent = 'Run Pipeline'; }
+      var statusLabel = monitorState.lastRun.status === 'completed' ? 'completed' : 'failed';
+      showMonitorMsg('Pipeline ' + statusLabel + ' \u2014 Run #' + monitorState.runId, monitorState.lastRun.status === 'completed' ? 'info' : 'error');
+      loadRunSelector(); // refresh run list
+    }
+
+    if (!data.pipeline_active && monitorState.lastRun.status === 'processing' && data.error) {
+      stopPolling();
+      var btn = document.getElementById('btnRun');
+      if (btn) { btn.disabled = false; btn.textContent = 'Run Pipeline'; }
+      showMonitorMsg('Pipeline error: ' + data.error, 'error');
+    }
+  })
+  .catch(function() {}); // silent polling errors
+}
+
+// ── Run selector ──
+
+function loadRunSelector() {
+  fetch('/api/runs')
+  .then(function(r) { return r.json(); })
+  .then(function(runs) {
+    var sel = document.getElementById('runSelector');
+    if (!sel) return;
+    var html = '<option value="">Select a run...</option>';
+    runs.forEach(function(r) {
+      var label = '#' + r.id + ' ' + (r.target_company || r.target_domain || '?') + ' [' + r.status + '] ' + (r.created_at || '');
+      html += '<option value="' + r.id + '">' + escHtml(label) + '</option>';
+    });
+    sel.innerHTML = html;
+  })
+  .catch(function() {});
+}
+
+function loadPastRun(runId) {
+  if (!runId) return;
+  stopPolling();
+  monitorState.runId = parseInt(runId);
+  // Load status once
+  fetch('/api/status/' + runId)
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    monitorState.lastAudit = data.audit_log || [];
+    monitorState.lastRun = data.run || {};
+    var el = document.getElementById('trackerSteps');
+    if (el) el.innerHTML = renderTrackerSteps(monitorState.lastAudit, monitorState.lastRun.status, monitorState.lastRun);
+    if (monitorState.activeTab === 'run') renderRunTab(monitorState.lastRun);
+    showMonitorMsg('Loaded Run #' + runId + ' [' + (monitorState.lastRun.status || '?') + ']', 'info');
+
+    // If still processing, start polling
+    if (monitorState.lastRun.status === 'processing') startPolling(parseInt(runId));
+  })
+  .catch(function(err) { showMonitorMsg('Failed to load run: ' + err.message, 'error'); });
+}
+
+// ── Data tabs ──
+
+function switchDataTab(tab) {
+  monitorState.activeTab = tab;
+  var tabMap = { 'Run': 'run', 'Discoveries': 'discoveries', 'Contacts': 'contacts', 'Audit Log': 'audit_log' };
+  document.querySelectorAll('.data-tab').forEach(function(t) {
+    t.classList.toggle('active', tabMap[t.textContent] === tab);
+  });
+
+  var panel = document.getElementById('dataPanel');
+  if (!monitorState.runId) { panel.innerHTML = '<div class="data-empty">No run selected</div>'; return; }
+
+  if (tab === 'run') {
+    renderRunTab(monitorState.lastRun || {});
+  } else {
+    panel.innerHTML = '<div class="data-empty">Loading...</div>';
+    fetch('/api/data/' + monitorState.runId + '/' + tab)
+    .then(function(r) { return r.json(); })
+    .then(function(rows) {
+      if (tab === 'discoveries') renderDiscoveriesTab(rows);
+      else if (tab === 'contacts') renderContactsTab(rows);
+      else if (tab === 'audit_log') renderAuditLogTab(rows);
+    })
+    .catch(function(err) { panel.innerHTML = '<div class="data-empty">Error: ' + escHtml(err.message) + '</div>'; });
+  }
+}
+
+function renderRunTab(run) {
+  var panel = document.getElementById('dataPanel');
+  if (!run || !run.id) { panel.innerHTML = '<div class="data-empty">No run data</div>'; return; }
+  var html = '<dl class="data-kv">';
+  html += '<dt>Run ID</dt><dd>#' + run.id + '</dd>';
+  html += '<dt>Status</dt><dd><span class="' + (run.status === 'completed' ? 'st-completed' : run.status === 'failed' ? 'st-failed' : 'st-running') + '">' + (run.status || '?') + '</span></dd>';
+  html += '<dt>Target Domain</dt><dd>' + escHtml(run.target_domain || '') + '</dd>';
+  html += '<dt>Target Company</dt><dd>' + escHtml(run.target_company || '') + '</dd>';
+  html += '<dt>Featured Buyer</dt><dd>' + escHtml(run.featured_buyer_name || '\u2014') + '</dd>';
+  if (run.notion_url) html += '<dt>Notion URL</dt><dd><a href="' + escHtml(run.notion_url) + '" target="_blank">' + escHtml(run.notion_url) + '</a></dd>';
+  html += '<dt>Created</dt><dd>' + escHtml(run.created_at || '') + '</dd>';
+  if (run.completed_at) html += '<dt>Completed</dt><dd>' + escHtml(run.completed_at) + '</dd>';
+  html += '</dl>';
+  panel.innerHTML = html;
+}
+
+function renderDiscoveriesTab(rows) {
+  var panel = document.getElementById('dataPanel');
+  if (!rows || !rows.length) { panel.innerHTML = '<div class="data-empty">No discoveries for this run</div>'; return; }
+  var html = '<table class="data-table"><thead><tr><th>Buyer</th><th>Signal Type</th><th>Score</th><th>Summary</th></tr></thead><tbody>';
+  rows.forEach(function(r) {
+    html += '<tr><td>' + escHtml(r.buyer_name || '') + '</td>';
+    html += '<td>' + escHtml(r.signal_type || '') + '</td>';
+    html += '<td>' + (r.signal_score != null ? r.signal_score.toFixed(1) : '') + '</td>';
+    html += '<td>' + escHtml((r.signal_summary || '').slice(0, 120)) + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  panel.innerHTML = html;
+}
+
+function renderContactsTab(rows) {
+  var panel = document.getElementById('dataPanel');
+  if (!rows || !rows.length) { panel.innerHTML = '<div class="data-empty">No contacts for this run</div>'; return; }
+  var html = '<table class="data-table"><thead><tr><th>Name</th><th>Title</th><th>Email</th><th>Verified</th></tr></thead><tbody>';
+  rows.forEach(function(r) {
+    html += '<tr><td>' + escHtml(r.contact_name || '') + '</td>';
+    html += '<td>' + escHtml(r.contact_title || '') + '</td>';
+    html += '<td>' + escHtml(r.contact_email || '') + '</td>';
+    html += '<td>' + (r.email_verified ? '\u2713' : '') + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  panel.innerHTML = html;
+}
+
+function renderAuditLogTab(rows) {
+  var panel = document.getElementById('dataPanel');
+  if (!rows || !rows.length) { panel.innerHTML = '<div class="data-empty">No audit log entries</div>'; return; }
+  var html = '<table class="data-table"><thead><tr><th>Step</th><th>Status</th><th>Duration</th><th>Message</th></tr></thead><tbody>';
+  rows.forEach(function(r) {
+    var cls = r.status === 'success' ? 'st-completed' : r.status === 'failure' ? 'st-failed' : 'st-warning';
+    html += '<tr><td>' + escHtml(r.step || '') + '</td>';
+    html += '<td class="' + cls + '">' + escHtml(r.status || '') + '</td>';
+    html += '<td>' + (r.duration_seconds != null ? r.duration_seconds.toFixed(3) + 's' : '') + '</td>';
+    html += '<td>' + escHtml((r.message || '').slice(0, 100)) + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  panel.innerHTML = html;
+}
+
+// =======================================================
+// DIAGRAM VIEW (SVG node graph)
+// =======================================================
+
+function zoomDiagram(delta) {
+  if (delta === 0) {
+    var wrap = document.getElementById('diagramWrap');
+    var viewH = wrap.clientHeight;
+    var viewW = wrap.clientWidth;
+    var maxX = 0, maxY = 0;
+    Object.values(NODE_POSITIONS).forEach(function(p) {
+      if (p.x + NODE_W + 60 > maxX) maxX = p.x + NODE_W + 60;
+      if (p.y + 120 > maxY) maxY = p.y + 120;
+    });
+    state.zoom = Math.min(viewW / (maxX + 40), viewH / (maxY + 40), 1.5);
+    state.zoom = Math.round(state.zoom * 20) / 20;
+  } else {
+    state.zoom = Math.max(0.2, Math.min(2.0, state.zoom + delta));
+    state.zoom = Math.round(state.zoom * 20) / 20;
+  }
+  applyZoom();
+}
+
+function applyZoom() {
+  var canvas = document.getElementById('diagramCanvas');
+  canvas.style.transform = 'scale(' + state.zoom + ')';
+  document.getElementById('zoomLevel').textContent = Math.round(state.zoom * 100) + '%';
+}
+
+function renderDiagram() {
+  var nodesEl = document.getElementById('diagramNodes');
+  var svgEl = document.getElementById('diagramSvg');
+  var canvas = document.getElementById('diagramCanvas');
+
+  // Calculate canvas bounds
+  var maxX = 0, maxY = 0;
+  Object.values(NODE_POSITIONS).forEach(function(p) {
+    if (p.x + NODE_W + 60 > maxX) maxX = p.x + NODE_W + 60;
+    if (p.y + 120 > maxY) maxY = p.y + 120;
+  });
+  var canvasW = maxX + 80;
+  var canvasH = maxY + 80;
+
+  canvas.style.width = canvasW + 'px';
+  canvas.style.height = canvasH + 'px';
+  nodesEl.style.width = canvasW + 'px';
+  nodesEl.style.height = canvasH + 'px';
+  svgEl.setAttribute('width', canvasW);
+  svgEl.setAttribute('height', canvasH);
+  svgEl.style.width = canvasW + 'px';
+  svgEl.style.height = canvasH + 'px';
+
+  applyZoom();
+
+  // Phase section backgrounds
+  var nodesHtml = '';
+  var phaseGroups = {};
+  STEPS.forEach(function(s) {
+    var pos = NODE_POSITIONS[s.id];
+    if (!pos) return;
+    if (!phaseGroups[s.phase]) phaseGroups[s.phase] = { label: PHASE_LABELS[s.phase], nodes: [] };
+    phaseGroups[s.phase].nodes.push(pos);
+  });
+  var NODE_H = 85;
+  var LABEL_H = 16, MIN_W = 260;
+  var PHASE_PADS = { generate: { x: 60, y: 56 }, discover: { x: 56, y: 50 } };
+  var DEFAULT_PAD = { x: 28, y: 20 };
+  Object.keys(phaseGroups).forEach(function(phase) {
+    var g = phaseGroups[phase];
+    var pad = PHASE_PADS[phase] || DEFAULT_PAD;
+    var padX = pad.x, padY = pad.y;
+    var mnX = Infinity, mnY = Infinity, mxX = 0, mxY = 0;
+    g.nodes.forEach(function(p) {
+      if (p.x < mnX) mnX = p.x;
+      if (p.y < mnY) mnY = p.y;
+      if (p.x + NODE_W > mxX) mxX = p.x + NODE_W;
+      if (p.y + NODE_H > mxY) mxY = p.y + NODE_H;
+    });
+    var dimmed = state.focusPhase !== 'all' && !phaseMatch(phase, state.focusPhase);
+    var contentW = mxX - mnX + padX * 2;
+    var centerX = (mnX + mxX) / 2;
+    var sW = Math.max(contentW, MIN_W);
+    var sL = centerX - sW / 2;
+    var sT = mnY - padY - LABEL_H;
+    var sH = mxY - mnY + padY * 2 + LABEL_H * 2;
+    nodesHtml += '<div class="dphase-section' + (dimmed ? ' dphase-dimmed' : '') + '" style="left:' + sL + 'px;top:' + sT + 'px;width:' + sW + 'px;height:' + sH + 'px">';
+    nodesHtml += '<span class="dphase-section-label">' + g.label + '</span></div>';
+  });
+
+  // Draw nodes
+  STEPS.forEach(function(s) {
+    var pos = NODE_POSITIONS[s.id];
+    if (!pos) return;
+    var dimmed = state.focusPhase !== 'all' && !phaseMatch(s.phase, state.focusPhase);
+    var selected = state.selectedStep === s.id;
+    nodesHtml += '<div class="dnode dnode-' + primaryType(s) + ' ' + (selected ? 'dnode-selected' : '') + ' ' + (dimmed ? 'dnode-dimmed' : '') + '"';
+    nodesHtml += ' style="left:' + pos.x + 'px;top:' + pos.y + 'px;width:' + NODE_W + 'px"';
+    nodesHtml += ' onclick="selectDiagramNode(\'' + s.id + '\')" id="dnode-' + s.id + '">';
+    nodesHtml += '<div class="dnode-num">' + typeBadges(s) + renderSubAgentBadge(s) + ' ' + s.num + '</div>';
+    nodesHtml += '<div class="dnode-name">' + s.name + '</div>';
+    nodesHtml += renderIndicators(s);
+    nodesHtml += '<div class="dnode-meta">' + (s.meta.length > 50 ? s.meta.slice(0, 47) + '...' : s.meta) + '</div>';
+    nodesHtml += '</div>';
+  });
+
+  // Parallel group: Discovery (s3a, s3b, s3c)
+  var p1L = NODE_POSITIONS.s3a.x - 16, p1T = NODE_POSITIONS.s3a.y - 24;
+  var p1R = NODE_POSITIONS.s3c.x + NODE_W + 16, p1B = NODE_POSITIONS.s3a.y + 110;
+  nodesHtml += '<div class="dgroup-parallel" style="left:' + p1L + 'px;top:' + p1T + 'px;width:' + (p1R-p1L) + 'px;height:' + (p1B-p1T) + 'px">';
+  nodesHtml += '<span class="dgroup-parallel-label">PARALLEL \u2014 3 discovery searches</span></div>';
+
+  // Parallel group: Intel + Generation (s6, s7, s8, s9, s10, s11, s12)
+  var p2L = NODE_POSITIONS.s6.x - 40, p2T = NODE_POSITIONS.s6.y - 48;
+  var p2R = NODE_POSITIONS.s12.x + NODE_W + 40, p2B = NODE_POSITIONS.s9.y + 132;
+  nodesHtml += '<div class="dgroup-parallel" style="left:' + p2L + 'px;top:' + p2T + 'px;width:' + (p2R-p2L) + 'px;height:' + (p2B-p2T) + 'px">';
+  nodesHtml += '<span class="dgroup-parallel-label">PARALLEL \u2014 5 branches: 2 intel chains + 3 generators</span></div>';
+
+  // Sequential sub-chain: s6 -> s9
+  var sq1L = NODE_POSITIONS.s6.x - 20, sq1T = NODE_POSITIONS.s6.y - 24;
+  var sq1R = NODE_POSITIONS.s6.x + NODE_W + 20, sq1B = NODE_POSITIONS.s9.y + 112;
+  nodesHtml += '<div class="dgroup-sequential" style="left:' + sq1L + 'px;top:' + sq1T + 'px;width:' + (sq1R-sq1L) + 'px;height:' + (sq1B-sq1T) + 'px">';
+  nodesHtml += '<span class="dgroup-sequential-label">SEQUENTIAL</span></div>';
+
+  // Sequential sub-chain: s7 -> s10
+  var sq2L = NODE_POSITIONS.s7.x - 20, sq2T = NODE_POSITIONS.s7.y - 24;
+  var sq2R = NODE_POSITIONS.s7.x + NODE_W + 20, sq2B = NODE_POSITIONS.s10.y + 112;
+  nodesHtml += '<div class="dgroup-sequential" style="left:' + sq2L + 'px;top:' + sq2T + 'px;width:' + (sq2R-sq2L) + 'px;height:' + (sq2B-sq2T) + 'px">';
+  nodesHtml += '<span class="dgroup-sequential-label">SEQUENTIAL</span></div>';
+
+  nodesEl.innerHTML = nodesHtml;
+
+  // Draw SVG arrows from COMPUTED_EDGES
+  var svgHtml = '';
+  var edgeKeys = Object.keys(COMPUTED_EDGES);
+
+  // Count incoming edges per target for spread calculation
+  var incomingEdges = {};
+  edgeKeys.forEach(function(key) {
+    var edge = COMPUTED_EDGES[key];
+    if (!incomingEdges[edge.target]) incomingEdges[edge.target] = [];
+    incomingEdges[edge.target].push(edge.source);
+  });
+
+  function spreadX(nodeX, index, count) {
+    if (count <= 1) return nodeX + NODE_W / 2;
+    var pad = NODE_W / 2 - Math.min(count - 1, 6) * 5;
+    var usable = NODE_W - pad * 2;
+    return nodeX + pad + (index / (count - 1)) * usable;
+  }
+
+  var inIdx = {};
+  edgeKeys.forEach(function(key) {
+    var edge = COMPUTED_EDGES[key];
+    var from = NODE_POSITIONS[edge.source];
+    var to = NODE_POSITIONS[edge.target];
+    if (!from || !to) return;
+
+    var isActive = state.selectedStep === edge.source || state.selectedStep === edge.target;
+    var isHighlighted = state.highlightedEdge === key;
+
+    var fromCx = from.x + NODE_W / 2;
+    var fromBottom = from.y + 85;
+
+    var inCount = (incomingEdges[edge.target] || []).length;
+    var iIdx = inIdx[edge.target] || 0;
+    inIdx[edge.target] = iIdx + 1;
+    var toCx = spreadX(to.x, iIdx, inCount);
+    var toTop = to.y;
+
+    var dy = toTop - fromBottom;
+    var cpOffset = Math.max(40, Math.abs(dy) * 0.35);
+
+    var color, width;
+    if (isHighlighted) { color = '#58a6ff'; width = 3; }
+    else if (isActive) { color = '#58a6ff'; width = 2.5; }
+    else { color = 'rgba(48,54,61,0.45)'; width = 1.5; }
+
+    var arrowLen = 8;
+    var pathEndY = toTop - arrowLen;
+    var pathD = 'M ' + fromCx + ' ' + fromBottom + ' C ' + fromCx + ' ' + (fromBottom + cpOffset) + ', ' + toCx + ' ' + (toTop - cpOffset) + ', ' + toCx + ' ' + pathEndY;
+
+    var pathId = key.replace('->','-');
+    svgHtml += '<path id="epath-' + pathId + '" d="' + pathD + '" fill="none" stroke="' + color + '" stroke-width="' + width + '"/>';
+    svgHtml += '<polygon id="earrow-' + pathId + '" points="' + (toCx-4) + ',' + pathEndY + ' ' + (toCx+4) + ',' + pathEndY + ' ' + toCx + ',' + toTop + '" fill="' + color + '"/>';
+    // Invisible hit target for hover tooltip
+    svgHtml += '<path d="' + pathD + '" fill="none" stroke="transparent" stroke-width="14" style="pointer-events:stroke;cursor:pointer" data-edge="' + key + '" onmouseenter="showEdgeTooltip(event,\'' + key + '\')" onmouseleave="hideEdgeTooltip()" onclick="selectEdgeNode(\'' + key + '\')"/>';
+  });
+
+  // Validation loop arrows (pink, dotted, bidirectional)
+  VALIDATION_LOOPS.forEach(function(loop) {
+    var from = NODE_POSITIONS[loop.from];
+    var to = NODE_POSITIONS[loop.to];
+    if (!from || !to) return;
+    var loopKey = loop.from + '<->' + loop.to;
+    var isHighlighted = state.highlightedEdge === loopKey;
+    var isActive = state.selectedStep === loop.from || state.selectedStep === loop.to;
+
+    var color = isHighlighted ? '#ff69b4' : (isActive ? 'rgba(255,105,180,0.8)' : 'rgba(255,105,180,0.35)');
+    var width = isHighlighted ? 3 : (isActive ? 2.5 : 1.5);
+
+    var fromX = from.x + NODE_W + 8;
+    var fromY = from.y + 42;
+    var toX = to.x + NODE_W + 8;
+    var toY = to.y + 42;
+
+    var bulge = 60;
+    var cpX = Math.max(fromX, toX) + bulge;
+    var pathD = 'M ' + fromX + ' ' + fromY + ' C ' + cpX + ' ' + fromY + ', ' + cpX + ' ' + toY + ', ' + toX + ' ' + toY;
+
+    var a1 = '<polygon points="' + toX + ',' + toY + ' ' + (toX+7) + ',' + (toY-4) + ' ' + (toX+7) + ',' + (toY+4) + '" fill="' + color + '"/>';
+    var a2 = '<polygon points="' + fromX + ',' + fromY + ' ' + (fromX+7) + ',' + (fromY-4) + ' ' + (fromX+7) + ',' + (fromY+4) + '" fill="' + color + '"/>';
+
+    svgHtml += '<path id="epath-vloop-' + loop.from + '-' + loop.to + '" d="' + pathD + '" fill="none" stroke="' + color + '" stroke-width="' + width + '" stroke-dasharray="4,4"/>';
+    svgHtml += a1 + a2;
+    svgHtml += '<path d="' + pathD + '" fill="none" stroke="transparent" stroke-width="14" style="pointer-events:stroke;cursor:pointer" data-edge="' + loopKey + '" onmouseenter="showEdgeTooltip(event,\'' + loopKey + '\')" onmouseleave="hideEdgeTooltip()"/>';
+  });
+
+  svgEl.innerHTML = svgHtml;
+}
+
+function selectDiagramNode(id) {
+  state.selectedStep = id;
+  renderDiagram();
+  showDiagramDetail(id);
+  updatePrompt();
+}
+
+function showDiagramDetail(id) {
+  var s = STEPS.find(function(x) { return x.id === id; });
+  var el = document.getElementById('diagramDetail');
+  if (!s) { closeDiagramDetail(); return; }
+  el.innerHTML = buildDetailHtml(id, true);
+  el.classList.add('visible');
+}
+
+function closeDiagramDetail() {
+  document.getElementById('diagramDetail').classList.remove('visible');
+  state.selectedStep = null;
+  if (state.view === 'diagram') renderDiagram();
+}
+
+// =======================================================
+// VIEW SWITCHING (3 modes)
+// =======================================================
+
+function setView(v) {
+  state.view = v;
+  var app = document.getElementById('app');
+  document.getElementById('viewList').classList.toggle('active', v === 'list');
+  document.getElementById('viewMonitor').classList.toggle('active', v === 'monitor');
+  document.getElementById('viewDiagram').classList.toggle('active', v === 'diagram');
+  document.getElementById('zoomControls').style.display = v === 'diagram' ? 'flex' : 'none';
+
+  if (v === 'list') {
+    app.classList.remove('diagram-mode');
+    document.getElementById('monitorWrap').style.display = 'none';
+    document.getElementById('diagramCanvas').style.display = 'none';
+    closeDiagramDetail();
+    renderPipeline();
+    if (state.selectedStep) renderDetail(state.selectedStep);
+  } else if (v === 'monitor') {
+    app.classList.add('diagram-mode');
+    document.getElementById('monitorWrap').style.display = 'block';
+    document.getElementById('diagramCanvas').style.display = 'none';
+    closeDiagramDetail();
+    renderMonitor();
+  } else { // diagram
+    app.classList.add('diagram-mode');
+    document.getElementById('monitorWrap').style.display = 'none';
+    document.getElementById('diagramCanvas').style.display = 'block';
+    renderDiagram();
+    if (state.selectedStep) showDiagramDetail(state.selectedStep);
+  }
+}
+
+function focusPhase(p) {
+  state.focusPhase = p;
+  document.querySelectorAll('.preset-btn').forEach(function(b) {
+    b.classList.toggle('active',
+      (p==='all' && b.textContent==='Full Pipeline') ||
+      (p==='discover' && b.textContent==='Discovery') ||
+      (p==='generate' && b.textContent==='Generation'));
+  });
+  if (state.view === 'list') renderPipeline();
+  else if (state.view === 'diagram') renderDiagram();
+}
+
+// =======================================================
+// PROMPT EDITING
+// =======================================================
+
+function onPromptEdit(id) {
+  var el = document.getElementById('promptEdit-' + id);
+  if (el) { state.editedPrompts[id] = el.innerText; updatePrompt(); }
+}
+
+// =======================================================
+// MARKDOWN GENERATION (rich per-step specs)
+// =======================================================
+
+function generateStepMarkdown(s) {
+  var md = '';
+
+  // Header
+  md += '## Step ' + s.num + ': ' + s.name + '\n\n';
+  md += '> ' + s.meta + '\n\n';
+
+  // Metadata
+  var types = getTypes(s).map(function(t) { return t === 'llm' ? 'claude' : t; }).join(' + ');
+  var exec = s.parallel ? 'parallel (Group ' + PARALLEL_GROUPS[s.id] + ')' : 'sequential';
+  md += '### Metadata\n\n';
+  md += '- **Node Step ID:** ' + s.id + '\n';
+  md += '- **Node Type:** ' + types + '\n';
+  md += '- **Node Execution:** ' + exec + '\n';
+
+  // Implementation (matches UI detail panel section)
+  if (s.module || s.fn || s.timeout || s.service) {
+    md += '\n### Implementation\n\n';
+    if (s.module) md += '- **Module:** ' + s.module + '\n';
+    if (s.fn) md += '- **Function:** ' + s.fn + '\n';
+    if (s.timeout) md += '- **Timeout:** ' + s.timeout + '\n';
+    if (s.service) md += '- **Service:** ' + s.service + '\n';
+  }
+
+  // Conditional Run
+  if (s.conditionalRun) {
+    var crType = s.conditionalRun.type;
+    var crLabel = crType === 'always' ? 'Always runs' : crType === 'stop' ? 'Hard stop' : crType === 'skip' ? 'Conditional skip' : 'Branches';
+    md += '\n### Conditional Run\n\n';
+    md += '**' + crLabel + '**' + (s.conditionalRun.rule ? ' \u2014 ' + s.conditionalRun.rule.replace(/<b>/g, '**').replace(/<\/b>/g, '**') : '') + '\n';
+  }
+
+  // Tool Calls
+  if (s.tools && s.tools.length) {
+    md += '\n### Tool Calls\n\n';
+    s.tools.forEach(function(t) { md += '- `' + t + '`\n'; });
+  }
+
+  // Data In (grouped by source)
+  if (s.inputs && s.inputs.length) {
+    md += '\n### Data In\n';
+    var groups = {};
+    s.inputs.forEach(function(name) {
+      var base = name.split('.')[0];
+      var src = INPUT_SOURCES[name] || INPUT_SOURCES[base] || null;
+      if (!groups[src]) groups[src] = [];
+      groups[src].push(name);
+    });
+    var order = [null].concat(STEPS.map(function(x) { return x.id; }));
+    var sortedKeys = Object.keys(groups).sort(function(a, b) {
+      return order.indexOf(a === 'null' ? null : a) - order.indexOf(b === 'null' ? null : b);
+    });
+    sortedKeys.forEach(function(src) {
+      var label = getSourceLabel(src === 'null' ? null : src);
+      md += '\n**From ' + label + ':**\n';
+      groups[src].forEach(function(n) { md += '- `' + n + '`\n'; });
+    });
+  }
+
+  // Data Out
+  if (s.outputs && s.outputs.length) {
+    md += '\n### Data Out\n\n';
+    s.outputs.forEach(function(d) {
+      var schema = s.outputSchema ? s.outputSchema[d] : null;
+      if (schema) {
+        md += '- `' + d + '`: ' + schema + '\n';
+      } else {
+        md += '- `' + d + '`\n';
+      }
+    });
+  }
+
+  // Feeds Into
+  var outbound = getOutboundEdges(s.id);
+  var loops = VALIDATION_LOOPS.filter(function(l) { return l.from === s.id || l.to === s.id; });
+  if (outbound.length || loops.length) {
+    md += '\n### Feeds Into\n\n';
+    loops.forEach(function(loop) {
+      var otherId = loop.from === s.id ? loop.to : loop.from;
+      var other = STEPS.find(function(x) { return x.id === otherId; });
+      if (!other) return;
+      md += '**\u21c4 Validation loop** with Step ' + other.num + ': ' + other.name + '\n';
+      md += loop.label.replace(/<b>/g, '**').replace(/<\/b>/g, '**') + '\n\n';
+    });
+    outbound.forEach(function(edge) {
+      var target = STEPS.find(function(x) { return x.id === edge.target; });
+      if (!target) return;
+      md += '**\u2192 Step ' + target.num + ': ' + target.name + ':** ' + edge.variables.join(', ') + '\n';
+    });
+  }
+
+  // Detail / Prompt sections
+  var pt = primaryType(s);
+  var isHybrid = getTypes(s).length > 1;
+
+  if (isHybrid && s.detail) {
+    var detailLabel = pt === 'tool' ? 'Tool Logic' : pt === 'validate' ? 'Validation Logic' : pt === 'logic' ? 'Logic' : pt === 'sqlite' ? 'DB Operations' : 'Detail';
+    md += '\n### ' + detailLabel + '\n\n```\n' + s.detail + '\n```\n';
+  }
+  if (hasType(s, 'llm') && s.prompt) {
+    var prompt = state.editedPrompts[s.id] || s.prompt;
+    md += '\n### LLM Prompt\n\n```\n' + prompt + '\n```\n';
+  }
+  if (!hasType(s, 'llm') && s.prompt) {
+    md += '\n### Prompt\n\n```\n' + s.prompt + '\n```\n';
+  }
+  if (!isHybrid && s.detail) {
+    var dLabel = pt === 'template' ? 'Template Logic' : pt === 'llm' ? 'LLM Sub-Agent Logic' : pt === 'api' ? 'API Call Detail' : pt === 'sqlite' ? 'DB Operations' : pt === 'python' ? 'Step Detail' : 'Logic';
+    md += '\n### ' + dLabel + '\n\n```\n' + s.detail + '\n```\n';
+  }
+
+  // Scoring (pipeline-specific: s4)
+  if (s.scoring) {
+    md += '\n### Scoring Weights\n\n';
+    Object.entries(s.scoring).forEach(function(entry) {
+      var k = entry[0], v = entry[1];
+      md += '- **' + k.replace(/_/g, ' ') + ':** ' + v + '%\n';
+    });
+  }
+
+  // Validation checks (pipeline-specific: s14)
+  if (s.checks) {
+    md += '\n### Validation Checks\n\n';
+    s.checks.forEach(function(c, i) {
+      md += (i+1) + '. ' + c + '\n';
+    });
+  }
+
+  // Quality Rules
+  if (s.qualityRules && s.qualityRules.length) {
+    md += '\n### Quality Rules\n\n';
+    s.qualityRules.forEach(function(r) { md += '- ' + r + '\n'; });
+  }
+
+  // Edge Cases
+  if (s.edgeCases && s.edgeCases.length) {
+    md += '\n### Errors & Fallbacks\n\n';
+    s.edgeCases.forEach(function(ec) {
+      var sev = (ec.severity || 'degrade').toUpperCase();
+      md += '- **' + sev + '** \u2014 ' + ec.label + ': ' + ec.action + '\n';
+    });
+  }
+
+  return md;
+}
+
+function generateAllMarkdown() {
+  var md = '';
+  var today = new Date();
+  var dateStr = today.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  md += '# Starbridge Intel Brief Pipeline \u2014 Full Workflow Spec\n\n';
+  md += '> 19-step pipeline: webhook \u2192 discovery \u2192 intel \u2192 report \u2192 publish\n';
+  md += '> Generated: ' + dateStr + '\n\n';
+
+  // Table of Contents
+  md += '## Table of Contents\n\n';
+  var tocPhase = '';
+  STEPS.forEach(function(s) {
+    if (s.phase !== tocPhase) {
+      if (tocPhase) md += '\n';
+      md += '**Phase ' + PHASE_ROMAN[s.phase] + ': ' + PHASE_LABELS[s.phase] + '**\n';
+      tocPhase = s.phase;
+    }
+    md += '- Step ' + s.num + ': ' + s.name + ' (' + s.id + ')\n';
+  });
+  md += '\n';
+
+  var lastPhase = '';
+  STEPS.forEach(function(s, i) {
+    if (s.phase !== lastPhase) {
+      if (lastPhase) md += '\n---\n\n';
+      md += '# Phase ' + PHASE_ROMAN[s.phase] + ': ' + PHASE_LABELS[s.phase] + '\n\n';
+      lastPhase = s.phase;
+    } else if (i > 0) {
+      md += '\n---\n\n';
+    }
+    md += generateStepMarkdown(s);
+  });
+
+  return md;
+}
+
+// =======================================================
+// PROMPT BAR + MODAL
+// =======================================================
+
+function updatePrompt() {
+  var el = document.getElementById('promptOutput');
+  if (!state.selectedStep) {
+    el.textContent = 'Select a step to see its full markdown spec.';
+    return;
+  }
+  var s = STEPS.find(function(x) { return x.id === state.selectedStep; });
+  if (!s) return;
+  el.textContent = generateStepMarkdown(s);
+}
+
+function togglePromptBar() {
+  state.promptMinimized = !state.promptMinimized;
+  document.getElementById('promptOutputBar').classList.toggle('minimized', state.promptMinimized);
+  document.getElementById('minimizeBtn').innerHTML = state.promptMinimized ? '&#9652;' : '&#9662;';
+}
+
+function copyPrompt() {
+  var text = document.getElementById('promptOutput').textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    var btn = document.getElementById('copyBtn');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(function() { btn.textContent = 'Copy Markdown'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
+function showAllMarkdown() {
+  document.getElementById('mdModalContent').textContent = generateAllMarkdown();
+  document.getElementById('mdModalOverlay').classList.add('visible');
+}
+
+function hideAllMarkdown() {
+  document.getElementById('mdModalOverlay').classList.remove('visible');
+}
+
+function copyAllMarkdown() {
+  navigator.clipboard.writeText(generateAllMarkdown()).then(function() {
+    var btn = document.getElementById('copyAllBtn');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(function() { btn.textContent = 'Copy All'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
+// =======================================================
+// SCROLL ZOOM
+// =======================================================
+
+document.getElementById('diagramWrap').addEventListener('wheel', function(e) {
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    var delta = e.deltaY < 0 ? 0.05 : -0.05;
+    zoomDiagram(delta);
+  }
+}, { passive: false });
+
+// =======================================================
+// INIT
+// =======================================================
+
+renderPipeline();
+updatePrompt();
+</script>
+</body>
+</html>
