@@ -151,6 +151,13 @@ roadmap/                               # What ships when — V1 deadline vs. fut
   v1-mvp.md                           #   V1 spec — deadline, scope in/out, critical path, blockers, acceptance criteria
   v2-scale.md                         #   V2 — multi-signal, multi-channel, branded reports, SB API integration
   ideas-parking-lot.md                 #   Future ideas — Signal Refresher, batch pre-gen, Procurement Risk Signals, more
+  WIP/                                 #   Work-in-progress artifacts — not yet finalized
+    prompts/                           #     Agent prompts and interactive workflow playground
+      README.md                        #       Index + data architecture docs
+      intel-report-workflow-v2.html    #       Interactive 19-step pipeline explorer (open in browser)
+      intel-report-workflow.html       #       Earlier v1 (superseded by v2)
+      intel-report-agent-directions.md #       Written agent execution spec (14 steps)
+      intel-report-prompts.md          #       Agent prompt templates per phase
 ```
 
 **Why it's organized this way**: `context/` (stable company knowledge) is separated from `workflows/` (operational processes that change weekly). `systems/` has per-tool subdirectories so debugging goes straight to the right place. `playbooks/` are operator-facing SOPs; `templates/` are copy-paste artifacts — they evolve independently. `decisions/` prevents re-litigating architectural choices. `roadmap/` has an explicit V1/V2 split because the trial has a deadline.

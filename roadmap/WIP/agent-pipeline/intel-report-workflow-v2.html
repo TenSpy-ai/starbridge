@@ -1,0 +1,2402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Intel Brief — Discovery & Showcase Workflow</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
+    --text: #e6edf3; --text-dim: #8b949e; --text-bright: #f0f6fc;
+    --blue: #58a6ff; --green: #3fb950; --orange: #d29922; --purple: #bc8cff;
+    --red: #f85149; --cyan: #39d2c0; --pink: #f778ba; --yellow: #e3b341;
+    --tool: #1a3a2a; --tool-border: #238636;
+    --llm: #2a1a3a; --llm-border: #8b5cf6;
+    --template: #1a2a3a; --template-border: #58a6ff;
+    --logic: #2a1f1a; --logic-border: #f0883e;
+    --validate: #2a1a1a; --validate-border: #f85149;
+    --sqlite: #2a2a0a; --sqlite-border: #f5e14e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+
+  .app { display: grid; grid-template-columns: 340px 1fr; grid-template-rows: auto 1fr auto; height: 100vh; }
+  .app.diagram-mode { grid-template-columns: 1fr; }
+  .app.diagram-mode .pipeline { display: none; }
+  .app.diagram-mode .detail { display: none; }
+  .app.diagram-mode .diagram-wrap { display: block; }
+
+  /* View toggle buttons */
+  .view-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 12px; font-size: 11px; cursor: pointer; transition: all 0.15s; }
+  .view-btn:first-of-type { border-radius: 6px 0 0 6px; }
+  .view-btn:last-of-type { border-radius: 0 6px 6px 0; margin-left: -1px; }
+  .view-btn.active { border-color: var(--blue); color: var(--blue); background: rgba(88,166,255,0.1); z-index: 1; position: relative; }
+  .view-btn:hover:not(.active) { border-color: var(--blue); color: var(--text); }
+
+  /* Diagram view */
+  .diagram-wrap { display: none; position: relative; overflow: auto; background: var(--bg); grid-column: 1 / -1; grid-row: 2; }
+  .diagram-canvas { transform-origin: 0 0; transition: transform 0.15s ease; }
+  .diagram-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; }
+  .diagram-nodes { position: absolute; top: 0; left: 0; z-index: 2; }
+
+  .dnode { position: absolute; width: 160px; padding: 10px 12px; border-radius: 10px; border: 2px solid var(--border); background: var(--surface); cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; user-select: none; }
+  .dnode:hover { border-color: var(--blue); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+  .dnode.dnode-selected { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,0.25), 0 0 20px rgba(88,166,255,0.3), 0 0 40px rgba(88,166,255,0.1); }
+  .dnode.dnode-dimmed { opacity: 0.15; pointer-events: none; }
+  .dnode-num { font-size: 9px; font-weight: 700; color: var(--text-dim); margin-bottom: 3px; display: flex; align-items: center; gap: 5px; }
+  .dnode-name { font-size: 11px; font-weight: 600; color: var(--text-bright); line-height: 1.3; }
+  .dnode-meta { font-size: 10px; color: var(--text-dim); margin-top: 3px; line-height: 1.3; }
+  .dnode .step-badge { font-size: 8px; padding: 0px 5px; }
+
+  .dnode-tool { border-color: var(--cyan); }
+  .dnode-tool:hover { border-color: var(--cyan); }
+  .dnode-llm { border-color: var(--llm-border); }
+  .dnode-llm:hover { border-color: var(--purple); }
+  .dnode-template { border-color: var(--template-border); }
+  .dnode-template:hover { border-color: var(--blue); }
+  .dnode-logic { border-color: var(--logic-border); }
+  .dnode-logic:hover { border-color: var(--orange); }
+  .dnode-validate { border-color: var(--validate-border); }
+  .dnode-validate:hover { border-color: var(--red); }
+  .dnode-source { border-color: var(--text-dim); }
+  .dnode-source:hover { border-color: var(--text-bright); }
+  .dnode-sqlite { border-color: var(--sqlite-border); }
+  .dnode-sqlite:hover { border-color: var(--yellow); }
+
+  .dgroup-parallel { position: absolute; border: 2px dashed var(--text-dim); border-radius: 14px; pointer-events: none; z-index: 0; }
+  .dgroup-parallel-label { position: absolute; top: -10px; left: 20px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--text-dim); background: var(--bg); padding: 0 8px; }
+  .dgroup-sequential { position: absolute; border: 2px dotted var(--orange); border-radius: 10px; pointer-events: none; z-index: 0; }
+  .dgroup-sequential-label { position: absolute; top: -10px; right: 20px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--orange); background: var(--bg); padding: 0 8px; }
+
+  /* Phase section backgrounds in diagram */
+  .dphase-section { position: absolute; border: 1px solid rgba(48,54,61,0.5); border-radius: 14px; background: rgba(22,27,34,0.3); pointer-events: none; }
+  .dphase-section-label { position: absolute; top: -8px; left: 50%; transform: translateX(-50%); font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--text-dim); background: var(--bg); padding: 0 10px; white-space: nowrap; border-bottom: 1px solid var(--border); padding-bottom: 2px; }
+  .dphase-section.dphase-dimmed { opacity: 0.15; }
+
+  /* Zoom controls */
+  .zoom-controls { display: none; position: fixed; top: 70px; left: 20px; z-index: 150; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px; gap: 2px; align-items: center; box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
+  .zoom-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); width: 30px; height: 28px; border-radius: 4px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: all 0.1s; }
+  .zoom-btn:hover { border-color: var(--blue); color: var(--blue); }
+  .zoom-level { font-size: 11px; color: var(--text-dim); padding: 0 8px; min-width: 44px; text-align: center; }
+
+  /* Floating detail panel in diagram mode */
+  .diagram-detail-float { display: none; position: fixed; top: 80px; right: 24px; width: 440px; max-height: calc(100vh - 200px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; z-index: 100; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+  .diagram-detail-float.visible { display: block; }
+  .diagram-detail-float .detail-close { position: absolute; top: 10px; right: 14px; background: none; border: none; color: var(--text-dim); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
+  .diagram-detail-float .detail-close:hover { background: var(--surface2); color: var(--text); }
+
+  /* Header */
+  .header { grid-column: 1/-1; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .header h1 { font-size: 15px; font-weight: 600; color: var(--text-bright); white-space: nowrap; }
+  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .controls label { font-size: 12px; color: var(--text-dim); }
+  .preset-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; transition: all 0.15s; }
+  .preset-btn:hover { border-color: var(--blue); color: var(--text); }
+  .preset-btn.active { border-color: var(--blue); color: var(--blue); background: rgba(88,166,255,0.1); }
+
+  /* Pipeline (left panel) */
+  .pipeline { overflow-y: auto; padding: 16px; border-right: 1px solid var(--border); background: var(--bg); }
+  .phase-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-dim); margin: 16px 0 8px 0; text-align: center; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .phase-label:first-child { margin-top: 0; }
+
+  .step { padding: 10px 12px; border-radius: 8px; margin-bottom: 4px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; position: relative; }
+  .step:hover { background: var(--surface); }
+  .step.selected { border-color: var(--blue); background: var(--surface); }
+  .step.dimmed { opacity: 0.3; pointer-events: none; }
+  .step-num { font-size: 10px; font-weight: 700; color: var(--text-dim); margin-bottom: 2px; display: flex; align-items: center; gap: 6px; }
+  .step-name { font-size: 13px; font-weight: 500; }
+  .step-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+  .step-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .badge-tool { background: rgba(57,210,192,0.1); color: var(--cyan); border: 1px solid var(--cyan); }
+  .badge-llm { background: var(--llm); color: var(--purple); border: 1px solid var(--llm-border); }
+  .badge-template { background: var(--template); color: var(--blue); border: 1px solid var(--template-border); }
+  .badge-logic { background: var(--logic); color: var(--logic-border); border: 1px solid var(--logic-border); }
+  .badge-validate { background: var(--validate); color: var(--red); border: 1px solid var(--validate-border); }
+  .badge-source { background: rgba(240,246,252,0.08); color: var(--text-bright); border: 1px solid var(--text-dim); }
+  .badge-sqlite { background: var(--sqlite); color: var(--sqlite-border); border: 1px solid var(--sqlite-border); }
+
+  .connector { width: 2px; height: 8px; background: var(--border); margin: 0 0 0 20px; }
+  .parallel-group { border-left: 2px solid var(--text-dim); margin: 12px 0 12px 20px; padding: 16px 0 8px 12px; position: relative; }
+  .parallel-group::before { content: 'PARALLEL'; position: absolute; top: -8px; left: 8px; font-size: 9px; color: var(--text-dim); font-weight: 700; letter-spacing: 1px; }
+
+  /* Detail panel (right) */
+  .detail { overflow-y: auto; padding: 24px 28px; background: var(--surface); }
+  .detail-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); font-size: 14px; }
+  .detail h2 { font-size: 18px; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; }
+  .detail .subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+
+  .detail-section { margin-bottom: 24px; }
+  .detail-section h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .detail-section h3 .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+  .data-flow { display: flex; flex-wrap: wrap; gap: 6px; }
+  .data-chip { padding: 3px 10px; border-radius: 12px; font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .chip-in { background: rgba(88,166,255,0.1); color: var(--blue); border: 1px solid rgba(88,166,255,0.3); }
+  .chip-out { background: rgba(63,185,80,0.1); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+  .chip-feeds { background: rgba(210,153,34,0.1); color: var(--orange); border: 1px solid rgba(210,153,34,0.3); }
+  .chip-tool { background: rgba(57,210,192,0.1); color: var(--cyan); border: 1px solid rgba(57,210,192,0.3); }
+
+  /* Output schema breakdown */
+  .output-schema { margin-top: 0; }
+  .schema-row { margin-bottom: 8px; }
+  .schema-row:last-child { margin-bottom: 0; }
+  .schema-name { font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--green); background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.3); border-radius: 12px; padding: 3px 10px; display: inline-block; margin-bottom: 2px; }
+  .schema-type { font-size: 10px; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--text-dim); background: rgba(63,185,80,0.05); border: 1px solid rgba(63,185,80,0.1); border-radius: 4px; padding: 4px 8px; margin: 2px 0 0 0; white-space: pre-wrap; overflow-wrap: break-word; line-height: 1.5; }
+  .schema-type-inline { font-size: 10px; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--text-dim); display: block; padding-left: 2px; opacity: 0.8; }
+
+  /* Input source groups */
+  .input-group { margin-bottom: 10px; }
+  .input-group:last-child { margin-bottom: 0; }
+  .input-group-label { font-size: 10px; color: var(--text-dim); margin-bottom: 4px; padding-left: 2px; }
+  .input-group-label .src-link { color: var(--cyan); cursor: pointer; text-decoration: none; }
+  .input-group-label .src-link:hover { text-decoration: underline; }
+
+  .prompt-block { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; color: var(--text); position: relative; }
+  .prompt-block .editable { outline: none; min-height: 100px; }
+  .prompt-block .editable:focus { border-color: var(--blue); }
+
+  .output-block { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; color: var(--text-dim); max-height: 250px; overflow-y: auto; }
+
+  .arrow-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; color: var(--text-dim); }
+  .arrow-row .arrow { color: var(--text-dim); font-size: 14px; }
+  .arrow-row .target { color: var(--text); font-weight: 500; }
+
+  .quality-rule { padding: 6px 10px; background: rgba(248,81,73,0.08); border-left: 3px solid var(--red); border-radius: 0 6px 6px 0; margin-bottom: 6px; font-size: 12px; line-height: 1.5; }
+
+  /* Prompt output (bottom) */
+  .prompt-output { grid-column: 1/-1; border-top: 1px solid var(--border); background: var(--surface); padding: 12px 20px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; max-height: 180px; transition: all 0.2s; }
+  .prompt-output.minimized { max-height: 40px; padding: 10px 20px; overflow: hidden; }
+  .prompt-output.minimized .prompt-output-text { display: none; }
+  .prompt-output.minimized .copy-btn { display: none; }
+  .prompt-output-text { flex: 1; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: var(--text); line-height: 1.5; overflow-y: auto; max-height: 150px; white-space: pre-wrap; }
+  .copy-btn { background: var(--blue); color: #fff; border: none; padding: 6px 16px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.15s; margin-left: auto; align-self: flex-end; }
+  .copy-btn:hover { opacity: 0.85; }
+  .copy-btn.copied { background: var(--green); }
+  .minimize-btn { background: none; border: none; color: var(--text-dim); font-size: 16px; cursor: pointer; padding: 0 4px; line-height: 1; flex-shrink: 0; border-radius: 3px; }
+  .minimize-btn:hover { color: var(--text); background: var(--surface2); }
+  .view-all-btn { background: var(--surface2); color: var(--text); border: 1px solid var(--border); padding: 6px 16px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.15s; align-self: flex-end; }
+  .view-all-btn:hover { background: var(--border); }
+
+  /* Full workflow modal */
+  .md-modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; justify-content: center; align-items: center; }
+  .md-modal-overlay.visible { display: flex; }
+  .md-modal { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; width: 90vw; max-width: 900px; height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+  .md-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .md-modal-header h3 { margin: 0; font-size: 15px; color: var(--text-bright); }
+  .md-modal-header .md-modal-actions { display: flex; gap: 8px; }
+  .md-modal-close { background: none; border: none; color: var(--text-dim); font-size: 20px; cursor: pointer; padding: 2px 8px; border-radius: 4px; line-height: 1; }
+  .md-modal-close:hover { color: var(--text); background: var(--surface2); }
+  .md-modal-body { flex: 1; overflow-y: auto; padding: 20px; }
+  .md-modal-body pre { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: var(--text); line-height: 1.5; white-space: pre-wrap; margin: 0; }
+
+  .edit-hint { font-size: 11px; color: var(--text-dim); font-style: italic; margin-bottom: 8px; }
+
+  /* Error & fallback indicators */
+  .edge-case { padding: 8px 12px; background: var(--bg); border-radius: 6px; margin-bottom: 4px; font-size: 12px; display: flex; gap: 8px; border-left: 3px solid var(--orange); }
+  .edge-case.ec-stop { border-left-color: var(--red); background: rgba(248,81,73,0.06); }
+  .edge-case.ec-degrade { border-left-color: var(--orange); }
+  .edge-case.ec-skip { border-left-color: var(--text-dim); }
+  .edge-case .ec-severity { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; align-self: flex-start; margin-top: 1px; }
+  .ec-stop .ec-severity { color: var(--red); background: rgba(248,81,73,0.15); }
+  .ec-degrade .ec-severity { color: var(--orange); background: rgba(210,153,34,0.15); }
+  .ec-skip .ec-severity { color: var(--text-dim); background: rgba(139,148,158,0.15); }
+  .edge-case .ec-label { color: var(--text); font-weight: 600; white-space: nowrap; }
+  .edge-case .ec-action { color: var(--text-dim); }
+
+  /* Conditional run badge */
+  .conditional-run { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 12px; margin: 6px 0 2px 0; }
+  .conditional-run-always { color: var(--green); background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.2); }
+  .conditional-run-stop { color: var(--red); background: rgba(248,81,73,0.1); border: 1px solid rgba(248,81,73,0.2); }
+  .conditional-run-skip { color: var(--orange); background: rgba(210,153,34,0.1); border: 1px solid rgba(210,153,34,0.2); }
+  .conditional-run-branch { color: var(--purple); background: rgba(130,80,223,0.1); border: 1px solid rgba(130,80,223,0.2); }
+
+  /* Feeds Into styling */
+  .feeds-into-row { padding: 6px 0; border-bottom: 1px solid rgba(48,54,61,0.2); }
+  .feeds-into-row:last-child { border-bottom: none; }
+  .feeds-into-header { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .feeds-into-header .arrow { color: var(--orange); font-size: 14px; }
+  /* Validation loop */
+  .validation-loop-badge { font-size: 9px; font-weight: 700; color: #ff69b4; background: rgba(255,105,180,0.12); padding: 1px 6px; border-radius: 4px; letter-spacing: 0.3px; }
+  .validation-loop-row { border-left: 2px dotted rgba(255,105,180,0.4); padding-left: 10px; }
+  /* Edge tooltip */
+  .edge-tooltip { display: none; position: fixed; z-index: 200; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 11px; pointer-events: none; max-width: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
+
+  /* Edge highlight on hover */
+  .edge-highlighted { background: rgba(88,166,255,0.08); border-radius: 6px; }
+
+  /* Diagram legend */
+
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="header">
+    <h1>Intel Brief<span style="font-size:10px;font-weight:700;letter-spacing:1px;background:var(--green);color:var(--bg);padding:2px 8px;border-radius:4px;margin-left:8px">V2</span></h1>
+    <div class="controls">
+      <span style="font-size:12px;color:var(--text-dim)">Discovery &amp; Showcase Workflow</span>
+      <span style="width:1px;height:20px;background:var(--border);display:inline-block;margin:0 4px"></span>
+      <button class="preset-btn" onclick="focusPhase('discover')">Discovery</button>
+      <button class="preset-btn" onclick="focusPhase('generate')">Generation</button>
+      <button class="preset-btn active" onclick="focusPhase('all')">Full Pipeline</button>
+      <span style="width:1px;height:20px;background:var(--border);display:inline-block;margin:0 4px"></span>
+      <button class="view-btn active" id="viewList" onclick="setView('list')">List</button>
+      <button class="view-btn" id="viewDiagram" onclick="setView('diagram')">Diagram</button>
+    </div>
+  </div>
+
+  <div class="pipeline" id="pipeline"></div>
+  <div class="detail" id="detail"><div class="detail-empty">Click a step to see details</div></div>
+
+  <div class="diagram-wrap" id="diagramWrap">
+    <div class="diagram-canvas" id="diagramCanvas">
+      <svg class="diagram-svg" id="diagramSvg"></svg>
+      <div class="diagram-nodes" id="diagramNodes"></div>
+    </div>
+    <div class="diagram-detail-float" id="diagramDetail"></div>
+  </div>
+
+  <div class="prompt-output" id="promptOutputBar">
+    <button class="minimize-btn" id="minimizeBtn" onclick="togglePromptBar()" title="Minimize">&#9662;</button>
+    <div class="prompt-output-text" id="promptOutput">Select a step to see its full markdown spec.</div>
+    <button class="view-all-btn" onclick="showAllMarkdown()">View All</button>
+    <button class="copy-btn" id="copyBtn" onclick="copyPrompt()">Copy Markdown</button>
+  </div>
+
+  <!-- Full workflow markdown modal -->
+  <div class="md-modal-overlay" id="mdModalOverlay" onclick="if(event.target===this)hideAllMarkdown()">
+    <div class="md-modal">
+      <div class="md-modal-header">
+        <h3>Full Workflow Markdown</h3>
+        <div class="md-modal-actions">
+          <button class="copy-btn" id="copyAllBtn" onclick="copyAllMarkdown()">Copy Markdown</button>
+          <button class="md-modal-close" onclick="hideAllMarkdown()" title="Close">&times;</button>
+        </div>
+      </div>
+      <div class="md-modal-body">
+        <pre id="mdModalContent"></pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="zoom-controls" id="zoomControls">
+    <button class="zoom-btn" onclick="zoomDiagram(-0.1)" title="Zoom out">&#8722;</button>
+    <span class="zoom-level" id="zoomLevel">100%</span>
+    <button class="zoom-btn" onclick="zoomDiagram(0.1)" title="Zoom in">+</button>
+    <button class="zoom-btn" onclick="zoomDiagram(0)" title="Fit to view" style="font-size:12px">Fit</button>
+  </div>
+
+  <div id="edgeTooltip" class="edge-tooltip"></div>
+
+</div>
+
+<script>
+const state = { selectedStep: null, focusPhase: 'all', editedPrompts: {}, view: 'list', zoom: 1, promptMinimized: false, highlightedEdge: null };
+
+// ═══════════════════════════════════════════════════════
+// STEPS — V2 Discovery & Showcase Workflow
+// ═══════════════════════════════════════════════════════
+
+const STEPS = [
+
+  // ─── Phase: Source ───
+  { id: 's0', phase: 'source', num: '0', name: 'Webhook Input', type: 'source',
+    meta: 'Clay webhook — target company info from positive campaign reply',
+    conditionalRun: { type: 'stop', rule: 'STOPS pipeline if any required webhook field is missing' },
+    inputs: [],
+    outputs: ['target_company', 'target_domain', 'product_description', 'campaign_signal', 'campaign_id', 'prospect_name', 'prospect_email'],
+    tools: [],
+    prompt: null,
+    detail: `Entry point. Clay fires this webhook when Smartlead detects a positive reply from a prospect.
+
+The TARGET is the company whose salesperson responded to a Starbridge outbound email. They are a potential Starbridge customer — they sell a product/service to SLED entities.
+
+All campaigns are generic. No specific buyer is pre-identified. The workflow must DISCOVER which SLED buyers are relevant.
+
+Fields received:
+\u2022 target_company — responding company name (e.g., "VMock")
+\u2022 target_domain — email domain (e.g., "vmock.com")
+\u2022 product_description — what their product does
+\u2022 campaign_signal — the signal theme from the outbound email
+\u2022 campaign_id — which campaign triggered this reply
+\u2022 prospect_name — who replied
+\u2022 prospect_email — their email address`,
+    qualityRules: [
+      'target_domain must be a valid domain (not an email address, not blank)',
+      'prospect_email must be a valid email address matching target_domain',
+      'All 7 field keys must be present in the webhook payload — missing keys indicate a Smartlead/Clay webhook misconfiguration (empty/null values are handled downstream)'
+    ],
+    edgeCases: [
+      { label: 'target_domain is an email address instead of domain', action: 'Extract domain from email (split on @). Log warning — Clay webhook may be misconfigured.', severity: 'degrade' }
+    ],
+    outputSchema: {
+      'target_company': 'string',
+      'target_domain': 'string',
+      'product_description': 'string',
+      'campaign_signal': 'string',
+      'campaign_id': 'string',
+      'prospect_name': 'string',
+      'prospect_email': 'string'
+    }
+  },
+
+  // ─── Phase: Input ───
+  { id: 's1', phase: 'input', num: '1', name: 'Validate & Load Context', type: ['validate', 'sqlite'],
+    meta: 'Check required fields + query SQLite for prior runs and cached insights',
+    conditionalRun: { type: 'stop', rule: 'STOPS if both target_company AND target_domain are missing' },
+    inputs: ['target_company', 'target_domain', 'product_description', 'campaign_signal', 'prospect_name', 'prospect_email'],
+    outputs: ['EXISTING_INSIGHTS', 'PRIOR_RUNS'],
+    tools: ['sqlite_query'],
+    prompt: null,
+    detail: `Two operations:
+
+1. VALIDATE required fields:
+   \u2022 REQUIRED: at least one of target_company or target_domain
+   \u2022 RECOMMENDED: product_description (s2 can infer from company/domain if missing, but quality degrades)
+   \u2022 OPTIONAL: campaign_signal, prospect_name, prospect_email (pass-through to s2/s5 — s1 validates presence but takes no action if missing)
+
+2. QUERY SQLite for context:
+   \u2022 SELECT * FROM runs WHERE target_domain = ?
+     \u2192 Are there prior runs for this target company?
+     \u2192 Prior runs include raw discovery JSON (discovery_signals_a/b, discovery_buyers),
+       raw intel data (feat_profile, feat_contacts, etc.), and individual sections.
+       This enables s2 to diverge strategy and s4 to compare against prior selections.
+   \u2022 SELECT * FROM discoveries WHERE target_domain = ?
+     \u2192 Are there cached buyer/signal insights (ranked results from prior s4)?
+   \u2022 If same prospect_email already has a run \u2192 flag as DUPLICATE
+
+DB Schema:
+  runs(id, target_domain, prospect_email, target_company,
+       product_description, search_strategy JSON,
+       -- raw discovery (persisted in s5)
+       discovery_signals_a JSON, discovery_signals_b JSON,
+       discovery_buyers JSON,
+       -- selection results (persisted in s16)
+       featured_buyer_id, featured_buyer_name,
+       secondary_buyers JSON,
+       -- raw intel data (persisted in s16)
+       feat_profile JSON, feat_contacts JSON,
+       feat_opportunities JSON, feat_ai_context TEXT,
+       feat_ai_context_available BOOLEAN,
+       sec_profiles JSON, sec_contacts JSON,
+       -- generated sections (persisted in s16)
+       section_exec_summary TEXT, section_featured TEXT,
+       section_secondary TEXT, section_cta TEXT,
+       section_footer TEXT,
+       -- final output (persisted in s16)
+       report_markdown TEXT, notion_url TEXT,
+       status TEXT, created_at TEXT, completed_at TEXT)
+  discoveries(id, run_id, target_domain, buyer_id,
+              buyer_name, signal_type, signal_summary,
+              signal_score REAL, discovered_at)
+  contacts(id, run_id, buyer_id, contact_name,
+           contact_title, contact_email, email_verified,
+           relevance_score REAL, discovered_at)
+
+→ EXISTING_INSIGHTS: array of { id, runId, targetDomain, buyerId, buyerName, signalType, signalSummary, signalScore, discoveredAt }
+  Rows from discoveries table for this target_domain. Empty array if no prior runs.
+
+→ PRIOR_RUNS: array of { id, targetDomain, prospectEmail, targetCompany, productDescription, searchStrategy, discoverySignalsA, discoverySignalsB, discoveryBuyers, featuredBuyerId, featuredBuyerName, secondaryBuyers, featProfile, featContacts, featOpportunities, featAiContext, featAiContextAvailable, secProfiles, secContacts, sectionExecSummary, sectionFeatured, sectionSecondary, sectionCta, sectionFooter, reportMarkdown, notionUrl, status, createdAt, completedAt }
+  Full rows from runs table for this target_domain. JSON columns are parsed objects. Empty array if first run.`,
+    qualityRules: [],
+    edgeCases: [
+      { label: 'Missing product_description', action: 'Proceed — s2 will infer from target_company + target_domain. Set low-confidence flag on SEARCH_STRATEGY.', severity: 'degrade' },
+      { label: 'Duplicate prospect_email for same domain', action: 'Set DUPLICATE flag. Vary discovery angles to produce a different report.', severity: 'degrade' },
+      { label: 'Existing insights for target_domain', action: 'Load EXISTING_INSIGHTS. Use to seed analysis but still run fresh discovery.', severity: 'skip' }
+    ],
+    outputSchema: {
+      'EXISTING_INSIGHTS': '[{ id, runId, targetDomain, buyerId, buyerName, signalType, signalSummary, signalScore, discoveredAt }]',
+      'PRIOR_RUNS': '[{ id, targetDomain, prospectEmail, targetCompany, productDescription, searchStrategy, discoverySignalsA, discoverySignalsB, discoveryBuyers, featuredBuyerId, featuredBuyerName, secondaryBuyers, ..., status, createdAt, completedAt }]'
+    }
+  },
+
+  // ─── Phase: Analyze ───
+  { id: 's2', phase: 'analyze', num: '2', name: 'Analyze Target ICP', type: 'llm',
+    meta: 'LLM determines SLED segments, search keywords, and discovery strategy',
+    conditionalRun: { type: 'branch', rule: 'Diverges strategy if PRIOR_RUNS exist for this domain' },
+    inputs: ['target_company', 'target_domain', 'product_description', 'campaign_signal', 'EXISTING_INSIGHTS', 'PRIOR_RUNS'],
+    outputs: ['SEARCH_STRATEGY'],
+    tools: [],
+    prompt: `You are a SLED market analyst determining a Starbridge discovery search strategy.
+
+TARGET COMPANY: {target_company}
+TARGET DOMAIN: {target_domain}
+PRODUCT DESCRIPTION: {product_description}
+CAMPAIGN SIGNAL: {campaign_signal}
+EXISTING INSIGHTS (from prior runs, may be empty): {EXISTING_INSIGHTS}
+PRIOR RUNS (if same domain was processed before): {PRIOR_RUNS}
+
+YOUR TASK:
+Analyze this target company and determine what SLED buyers and signals they'd find most compelling. Output a structured search strategy:
+
+1. SLED_SEGMENTS: Which buyer types would use this product? Pick 1-3 from:
+   HigherEducation, SchoolDistrict, City, County, StateAgency
+   Rank by relevance.
+
+2. PRIMARY_KEYWORDS: 3-5 search terms that would appear in board meetings, RFPs, or contracts when a SLED entity is looking for this type of product.
+   Use SLED procurement language, not vendor marketing speak.
+   Example for career services AI: "career services", "workforce development", "career readiness", "CTE pathways"
+
+3. ALTERNATE_KEYWORDS: 3-5 adjacent terms that might surface related opportunities.
+   Example: "student outcomes", "post-graduation employment", "industry partnerships"
+
+4. SIGNAL_PRIORITY: Rank the 8 signal types by relevance for this product:
+   RFP, Contract Expiration, Budget, Board Discussion, Purchase, Leadership, Grant, Conference
+
+5. IDEAL_BUYER_PROFILE: What makes a best-fit buyer?
+   - Size range (enrollment/population)
+   - Geographic preferences (if campaign context suggests a region)
+   - Budget indicators
+
+If PRIOR_RUNS exist, DIVERGE the strategy \u2014 use different keyword angles, segments, or buyer profiles to avoid generating a duplicate report. Prior runs now include raw discovery JSON (discovery_signals_a/b, discovery_buyers) so you can see exactly which keywords and buyer types were already tried.`,
+    detail: null,
+    qualityRules: [
+      'Keywords must use SLED procurement language, not vendor marketing speak',
+      'At least 1 SLED segment must be identified',
+      'Primary and alternate keywords must not overlap significantly'
+    ],
+    edgeCases: [
+      { label: 'Product description too vague to analyze', action: 'LLM infers from target_company name + domain. Set low-confidence flag.', severity: 'degrade' },
+      { label: 'Product only serves 1 SLED segment', action: 'Single segment is fine. Focus all searches on that vertical.', severity: 'skip' }
+    ],
+    outputSchema: {
+      'SEARCH_STRATEGY': '{ SLED_SEGMENTS: string[], PRIMARY_KEYWORDS: string[], ALTERNATE_KEYWORDS: string[], SIGNAL_PRIORITY: string[], IDEAL_BUYER_PROFILE: string }'
+    }
+  },
+
+  // ─── Phase: Discovery (parallel) ───
+  { id: 's3a', phase: 'discover', num: '3A', name: 'Signal Discovery \u2014 Primary', type: 'tool', parallel: true,
+    meta: 'starbridge_opportunity_search \u2014 broad search with primary keywords, NO buyerIds',
+    conditionalRun: { type: 'always' },
+    inputs: ['SEARCH_STRATEGY.PRIMARY_KEYWORDS', 'SEARCH_STRATEGY.SIGNAL_PRIORITY'],
+    outputs: ['DISCOVERY_SIGNALS_A'],
+    tools: ['starbridge_opportunity_search'],
+    prompt: null,
+    detail: `The DISCOVERY search. This is the key architectural difference from v1 \u2014 no buyerIds, searching across ALL 296K+ buyers.
+
+Tool call:
+  starbridge_opportunity_search(
+    searchQuery: "{PRIMARY_KEYWORDS[0]} OR {PRIMARY_KEYWORDS[1]} OR {PRIMARY_KEYWORDS[2]}",
+    types: top 3 from SIGNAL_PRIORITY (e.g., ["Meeting", "RFP", "Contract"]),
+    pageSize: 40,
+    sortField: "SearchRelevancy"
+    // NO buyerIds \u2014 discovery mode
+  )
+
+From results, extract per opportunity:
+  \u2022 opportunity.buyerId + buyerName (these are the SLED entities)
+  \u2022 opportunity.title + summary (the signal content)
+  \u2022 opportunity.type (Meeting, Purchase, RFP, Contract)
+  \u2022 opportunity.postedDate, dueDate, purchaseAmount
+
+This returns signals across MANY different buyers. The unique buyer IDs extracted here become the candidate pool for the showcase report.
+
+\u2192 DISCOVERY_SIGNALS_A: array of { buyerId, buyerName, title, summary, type, postedDate, dueDate, purchaseAmount }`,
+    qualityRules: [],
+    edgeCases: [
+      { label: '0 results', action: 'Broaden keywords \u2014 try single keywords instead of OR query. If still 0, rely on s3b and s3c.', severity: 'degrade' },
+      { label: 'API timeout', action: 'Retry once. If still fails, proceed with s3b/s3c results only.', severity: 'degrade' },
+      { label: 'Results dominated by one buyer', action: 'Note this \u2014 the buyer may be an excellent featured candidate, but still pass all to s4 for diverse selection.', severity: 'skip' }
+    ],
+    outputSchema: {
+      'DISCOVERY_SIGNALS_A': '[{ buyerId, buyerName, title, summary, type, postedDate, dueDate, purchaseAmount }]'
+    }
+  },
+
+  { id: 's3b', phase: 'discover', num: '3B', name: 'Signal Discovery \u2014 Alternate', type: 'tool', parallel: true,
+    meta: 'starbridge_opportunity_search \u2014 alternate keywords for breadth',
+    conditionalRun: { type: 'always' },
+    inputs: ['SEARCH_STRATEGY.ALTERNATE_KEYWORDS', 'SEARCH_STRATEGY.SIGNAL_PRIORITY'],
+    outputs: ['DISCOVERY_SIGNALS_B'],
+    tools: ['starbridge_opportunity_search'],
+    prompt: null,
+    detail: `Second discovery search using alternate/adjacent keywords for broader coverage.
+
+Tool call:
+  starbridge_opportunity_search(
+    searchQuery: "{ALTERNATE_KEYWORDS[0]} OR {ALTERNATE_KEYWORDS[1]} OR {ALTERNATE_KEYWORDS[2]}",
+    types: bottom 2-3 from SIGNAL_PRIORITY (e.g., ["Purchase", "Meeting"]),
+    pageSize: 40,
+    sortField: "SearchRelevancy"
+    // NO buyerIds
+  )
+
+This catches signals the primary search might miss \u2014 e.g., a school district discussing "student employment outcomes" rather than "career services."
+
+Extract same fields as s3a. Merge results with s3a in s4, deduplicating by buyerId.
+
+\u2192 DISCOVERY_SIGNALS_B: same structure as DISCOVERY_SIGNALS_A`,
+    qualityRules: [],
+    edgeCases: [
+      { label: '0 results', action: 'Not critical if s3a returned data. Proceed with available results.', severity: 'skip' },
+      { label: 'High overlap with s3a results', action: 'Expected if keywords are close. Deduplication in s4 handles this.', severity: 'skip' }
+    ],
+    outputSchema: {
+      'DISCOVERY_SIGNALS_B': '[{ buyerId, buyerName, title, summary, type, postedDate, dueDate, purchaseAmount }]'
+    }
+  },
+
+  { id: 's3c', phase: 'discover', num: '3C', name: 'Buyer Type Discovery', type: 'tool', parallel: true,
+    meta: 'starbridge_buyer_search \u2014 find buyers by type/characteristics',
+    conditionalRun: { type: 'always' },
+    inputs: ['SEARCH_STRATEGY.SLED_SEGMENTS', 'SEARCH_STRATEGY.IDEAL_BUYER_PROFILE'],
+    outputs: ['DISCOVERY_BUYERS'],
+    tools: ['starbridge_buyer_search'],
+    prompt: null,
+    detail: `Supplementary buyer search. Finds SLED entities by type even if they don't yet have matching signals in s3a/s3b.
+
+Tool call:
+  starbridge_buyer_search(
+    query: "{SLED_SEGMENT} {geographic_hint}",
+    pageSize: 20
+  )
+
+Example: "community colleges California" or "school districts Texas"
+
+This provides a fallback pool of buyers if the opportunity searches return few unique buyers. Also useful for finding large/prominent buyers that should be featured.
+
+Extract per buyer:
+  \u2022 buyerId, name, stateCode, tags[], url
+
+\u2192 DISCOVERY_BUYERS: array of { buyerId, name, stateCode, tags[], url }`,
+    qualityRules: [],
+    edgeCases: [
+      { label: '0 results', action: 'Not critical if s3a/s3b found buyers via opportunities. Proceed.', severity: 'skip' },
+      { label: 'Results are generic (too many large entities)', action: 'LLM in s4 will filter by signal match. These serve as fallback candidates.', severity: 'skip' }
+    ],
+    outputSchema: {
+      'DISCOVERY_BUYERS': '[{ buyerId, name, stateCode, tags: string[], url }]'
+    }
+  },
+
+  // ─── Phase: Select ───
+  { id: 's4', phase: 'select', num: '4', name: 'Rank & Select Buyers', type: ['logic', 'llm'],
+    meta: 'Deduplicate discovered buyers, score by signal quality, select featured + secondaries',
+    conditionalRun: { type: 'stop', rule: 'STOPS pipeline if 0 buyers found across all discovery' },
+    inputs: ['DISCOVERY_SIGNALS_A', 'DISCOVERY_SIGNALS_B', 'DISCOVERY_BUYERS', 'SEARCH_STRATEGY', 'product_description'],
+    outputs: ['FEATURED_BUYER_ID', 'FEATURED_BUYER_NAME', 'FEATURED_SIGNALS', 'SECONDARY_BUYERS', 'ALL_DISCOVERED'],
+    tools: [],
+    prompt: `You are selecting the most compelling SLED buyers to feature in a Starbridge showcase report.
+
+TARGET PRODUCT: {product_description}
+SEARCH STRATEGY: {SEARCH_STRATEGY}
+
+DISCOVERED SIGNALS (from opportunity searches):
+{DISCOVERY_SIGNALS_A + DISCOVERY_SIGNALS_B merged, deduplicated by buyerId}
+
+DISCOVERED BUYERS (from buyer search):
+{DISCOVERY_BUYERS}
+
+YOUR TASK:
+1. Extract all unique buyers across all discovery results
+2. For each buyer, compute a SHOWCASE SCORE:
+   - Signal count (more signals = more to show) \u2014 weight: 25%
+   - Signal recency (newer postedDate = hotter) \u2014 weight: 25%
+   - Signal urgency (approaching dueDate, contract expiration) \u2014 weight: 20%
+   - Dollar values (purchaseAmount, budget amounts) \u2014 weight: 15%
+   - Product relevance (how directly signals match the target's product) \u2014 weight: 15%
+
+3. SELECT FEATURED BUYER: The #1 scored buyer. This buyer will get a deep-dive section.
+   Ideal featured buyer has: multiple recent signals, at least one with urgency/dollar amount, clear product relevance.
+
+4. SELECT 2-4 SECONDARY BUYERS: Next-best scored buyers.
+   Ensure diversity \u2014 don't pick 4 school districts in the same state if possible.
+
+OUTPUT:
+- FEATURED_BUYER_ID, FEATURED_BUYER_NAME, FEATURED_SIGNALS[] (top 3-5 signals for featured)
+- SECONDARY_BUYERS[] (each: buyerId, buyerName, topSignalSummary, score)
+- ALL_DISCOVERED[] (full list for metadata)`,
+    detail: `Three-phase operation:
+
+Phase 1 \u2014 DETERMINISTIC: Extract unique buyerIds from all discovery results. Count signals per buyer. Calculate recency and urgency scores from dates.
+
+Phase 2 \u2014 LLM-ASSISTED: For close-scoring buyers, use semantic judgment to determine which tells the most compelling story for the target's product. Consider signal narrative quality \u2014 a single board meeting quote about the exact product category beats 5 generic purchase orders.
+
+Phase 3 \u2014 DETERMINISTIC: Format outputs. Ensure SECONDARY_BUYERS has geographic diversity. Cap at 4 secondaries.
+
+\u2192 FEATURED_SIGNALS: array of { buyerId, buyerName, title, summary, type, postedDate, dueDate, purchaseAmount, relevanceScore }
+  Top 3-5 signals for the featured buyer, sorted by showcase score descending.
+
+\u2192 SECONDARY_BUYERS: array of { buyerId, buyerName, topSignalSummary, score, stateCode, buyerType }
+  2-4 next-best scored buyers. Each includes their single best signal summary and computed showcase score.
+
+\u2192 ALL_DISCOVERED: array of { buyerId, buyerName, signalCount, totalSignals, topSignalType, stateCode }
+  Every unique buyer found across s3a/s3b/s3c, deduplicated by buyerId. Used for metadata (totalDiscovered count) and future re-ranking.`,
+    qualityRules: [
+      'Featured buyer must have at least 2 relevant signals',
+      'Secondary buyers should span different states or buyer types when possible'
+    ],
+    edgeCases: [
+      { label: 'Only 1 unique buyer found', action: 'That buyer is featured. No secondary cards. Note limitation in exec summary.', severity: 'degrade' },
+      { label: 'Same buyer dominates both signal searches', action: 'Strong featured candidate. Still select different secondaries from lower-ranked results.', severity: 'skip' },
+      { label: 'Many buyers but all low signal quality', action: 'Proceed with best available. Set low-confidence flag in metadata.', severity: 'degrade' }
+    ],
+    outputSchema: {
+      'FEATURED_BUYER_ID': 'string',
+      'FEATURED_BUYER_NAME': 'string',
+      'FEATURED_SIGNALS': '[{ buyerId, buyerName, title, summary, type, postedDate, dueDate, purchaseAmount, relevanceScore }]',
+      'SECONDARY_BUYERS': '[{ buyerId, buyerName, topSignalSummary, score, stateCode, buyerType }]',
+      'ALL_DISCOVERED': '[{ buyerId, buyerName, signalCount, totalSignals, topSignalType, stateCode }]'
+    }
+  },
+
+  { id: 's5', phase: 'select', num: '5', name: 'Persist Discovery', type: 'sqlite',
+    meta: 'Save raw discovery results, ranked selections, and run metadata to SQLite',
+    conditionalRun: { type: 'always' },
+    inputs: ['DISCOVERY_SIGNALS_A', 'DISCOVERY_SIGNALS_B', 'DISCOVERY_BUYERS', 'ALL_DISCOVERED', 'FEATURED_BUYER_ID', 'SECONDARY_BUYERS', 'target_domain', 'prospect_email', 'campaign_id', 'SEARCH_STRATEGY'],
+    outputs: ['DB_RUN_ID'],
+    tools: ['sqlite_insert'],
+    prompt: null,
+    detail: `Insert records into SQLite:
+
+1. INSERT INTO runs \u2014 create the run record with status='processing'
+   Run metadata:
+     target_domain, prospect_email, campaign_id, search_strategy = SEARCH_STRATEGY (JSON)
+   Selection results:
+     featured_buyer_id = FEATURED_BUYER_ID
+     featured_buyer_name = (from FEATURED_BUYER_ID lookup in ALL_DISCOVERED)
+     secondary_buyers = SECONDARY_BUYERS (JSON)
+   Raw discovery JSON:
+     discovery_signals_a = DISCOVERY_SIGNALS_A (JSON)
+     discovery_signals_b = DISCOVERY_SIGNALS_B (JSON)
+     discovery_buyers = DISCOVERY_BUYERS (JSON)
+   This preserves the pre-ranking raw results from each search strategy.
+
+2. INSERT INTO discoveries \u2014 one row per discovered buyer+signal pair
+   Fields: run_id, target_domain, buyer_id, buyer_name, signal_type, signal_summary, signal_score
+
+This enables:
+  \u2022 Future runs for same target_domain load cached insights AND raw discovery data
+  \u2022 Duplicate detection for same prospect_email
+  \u2022 Analytics on which search strategy (primary vs alternate vs buyer type) yields the best results
+  \u2022 Debugging: compare raw discovery vs ranked selections to tune scoring weights
+  \u2022 Re-ranking: re-run s4 on cached raw data with different scoring without re-calling APIs`,
+    qualityRules: [
+      'DB_RUN_ID must be a valid integer returned from the INSERT',
+      'Every entry in ALL_DISCOVERED must have a corresponding row in discoveries table',
+      'run status must be set to "processing" — only s16 sets "completed"'
+    ],
+    edgeCases: [
+      { label: 'SQLite write fails', action: 'Log warning, continue pipeline. Persistence is non-blocking.', severity: 'skip' }
+    ],
+    outputSchema: {
+      'DB_RUN_ID': 'integer — auto-increment ID from INSERT INTO runs'
+    }
+  },
+
+  // ─── Phase: Intel (parallel) ───
+  { id: 's6', phase: 'generate', num: '6', name: 'Featured Buyer Deep Intel', type: 'tool', parallel: true,
+    meta: '4 parallel Starbridge API calls on the featured buyer \u2014 profile, contacts, opportunities, AI chat',
+    conditionalRun: { type: 'always' },
+    inputs: ['FEATURED_BUYER_ID', 'FEATURED_BUYER_NAME'],
+    outputs: ['FEAT_PROFILE', 'FEAT_CONTACTS', 'FEAT_OPPORTUNITIES', 'FEAT_AI_CONTEXT', 'FEAT_AI_CONTEXT_AVAILABLE'],
+    tools: ['starbridge_buyer_profile', 'starbridge_buyer_contacts', 'starbridge_opportunity_search', 'starbridge_buyer_chat'],
+    prompt: null,
+    detail: `Four parallel API calls for the featured buyer:
+
+Call A: starbridge_buyer_profile(buyerId: FEATURED_BUYER_ID)
+  \u2192 FEAT_PROFILE: { name, tags[], stateCode, url, address, budget, procurementScore, enrollment, population }
+
+Call B: starbridge_buyer_contacts(buyerId: FEATURED_BUYER_ID, pageSize: 50)
+  \u2192 FEAT_CONTACTS: array of { name, title, normalizedTitles[], email, phone, emailVerified, worksAtBuyer }
+  Up to 50 contacts sorted by relevance.
+
+Call C: starbridge_opportunity_search(searchQuery: FEATURED_BUYER_NAME, buyerIds: [FEATURED_BUYER_ID], types: ["Meeting","Purchase","RFP","Contract"], pageSize: 30, sortField: "SearchRelevancy")
+  \u2192 FEAT_OPPORTUNITIES: array of { id, buyerId, buyerName, title, summary, type, postedDate, dueDate, purchaseAmount, sourceUrl }
+  Up to 30 opportunities scoped to this buyer (richer than discovery snippets).
+
+Call D: starbridge_buyer_chat(buyerId: FEATURED_BUYER_ID, question: "What are {FEATURED_BUYER_NAME}'s key strategic priorities, recent technology initiatives, major procurement activity, and leadership changes in the past 12 months? Include specific initiative names, dollar amounts, and dates.")
+  \u2192 FEAT_AI_CONTEXT: narrative strategic context string (slowest call: 10-30s)
+
+After all calls complete:
+  \u2192 FEAT_AI_CONTEXT_AVAILABLE: true if Call D succeeded, false if it timed out or failed. Always set \u2014 never null.`,
+    qualityRules: [
+      'At least one of the 4 calls must succeed — if all fail, report is severely degraded',
+      'FEAT_AI_CONTEXT_AVAILABLE must always be set (true or false), never null or undefined',
+      'FEAT_CONTACTS should contain at least 1 contact with emailVerified == true when available'
+    ],
+    edgeCases: [
+      { label: 'Profile call fails', action: 'FEAT_PROFILE = null. Featured section uses discovery data for name/type only.', severity: 'degrade' },
+      { label: 'Contacts call fails', action: 'FEAT_CONTACTS = null. No key contact in featured section. Note limitation.', severity: 'degrade' },
+      { label: 'Opportunities call fails', action: 'FEAT_OPPORTUNITIES = null. Featured section uses discovery signals + AI chat only.', severity: 'degrade' },
+      { label: 'AI chat times out (10-30s)', action: 'FEAT_AI_CONTEXT = null. Featured section relies on opportunity data only.', severity: 'degrade' },
+      { label: 'All 4 calls fail', action: 'Fall back to discovery data only for featured section. Set degraded flag.', severity: 'degrade' }
+    ],
+    outputSchema: {
+      'FEAT_PROFILE': '{ name, tags: string[], stateCode, url, address, budget, procurementScore, enrollment, population }',
+      'FEAT_CONTACTS': '[{ name, title, normalizedTitles: string[], email, phone, emailVerified, worksAtBuyer }]',
+      'FEAT_OPPORTUNITIES': '[{ id, buyerId, buyerName, title, summary, type, postedDate, dueDate, purchaseAmount, sourceUrl }]',
+      'FEAT_AI_CONTEXT': 'string — narrative strategic context from AI chat',
+      'FEAT_AI_CONTEXT_AVAILABLE': 'boolean — true if AI chat succeeded, false if timed out/failed'
+    }
+  },
+
+  { id: 's7', phase: 'generate', num: '7', name: 'Secondary Buyers Intel', type: 'tool', parallel: true,
+    meta: 'Batch Starbridge API calls on 2-4 secondary buyers \u2014 profiles + key contacts only',
+    conditionalRun: { type: 'skip', rule: 'Skips if SECONDARY_BUYERS is empty (0 selected in s4)' },
+    inputs: ['SECONDARY_BUYERS'],
+    outputs: ['SEC_PROFILES', 'SEC_CONTACTS'],
+    tools: ['starbridge_buyer_profile', 'starbridge_buyer_contacts'],
+    prompt: null,
+    detail: `Lighter intel gathering for secondary buyers. For each buyer in SECONDARY_BUYERS[]:
+
+Call A: starbridge_buyer_profile(buyerId: buyer.buyerId)
+  \u2192 Profile for snapshot card
+
+Call B: starbridge_buyer_contacts(buyerId: buyer.buyerId, pageSize: 10)
+  \u2192 Top contacts for key contact selection
+
+Run all calls in parallel across all secondary buyers. With 3 secondaries, that's 6 API calls total.
+
+No AI chat or deep opportunity search for secondaries \u2014 the discovery signals from s3a/s3b are sufficient for the card format.
+
+\u2192 SEC_PROFILES: array of { buyerId, name, tags[], stateCode, url, address, budget, procurementScore, enrollment, population }
+  One profile object per secondary buyer. Indexed by buyerId to match SECONDARY_BUYERS[].
+
+\u2192 SEC_CONTACTS: array of { buyerId, contacts: [{ name, title, normalizedTitles[], email, phone, emailVerified, worksAtBuyer }] }
+  Grouped by buyerId. Up to 10 contacts per secondary buyer.`,
+    qualityRules: [],
+    edgeCases: [
+      { label: 'Some profile calls fail', action: 'Include available buyers, skip failures. Minimum 1 secondary with data.', severity: 'degrade' },
+      { label: 'All secondary calls fail', action: 'Omit secondary buyer cards section entirely. Expand featured section.', severity: 'degrade' }
+    ],
+    outputSchema: {
+      'SEC_PROFILES': '[{ buyerId, name, tags: string[], stateCode, url, address, budget, procurementScore, enrollment, population }]',
+      'SEC_CONTACTS': '[{ buyerId, contacts: [{ name, title, normalizedTitles: string[], email, phone, emailVerified, worksAtBuyer }] }]'
+    }
+  },
+
+  // ─── Phase: Generate ───
+  { id: 's8', phase: 'generate', num: '8', name: 'Executive Summary', type: 'llm', parallel: true,
+    meta: 'LLM writes 2-3 sentence overview of what was discovered for this target',
+    conditionalRun: { type: 'always' },
+    inputs: ['target_company', 'product_description', 'SEARCH_STRATEGY', 'FEATURED_BUYER_NAME', 'SECONDARY_BUYERS', 'ALL_DISCOVERED'],
+    outputs: ['SECTION_EXEC_SUMMARY'],
+    tools: [],
+    prompt: `Write a 2-3 sentence executive summary for a Starbridge intel brief.
+
+TARGET: {target_company}
+PRODUCT: {product_description}
+SEARCH STRATEGY: {SEARCH_STRATEGY}
+FEATURED BUYER: {FEATURED_BUYER_NAME}
+SECONDARY BUYERS: {SECONDARY_BUYERS count and names}
+TOTAL DISCOVERED: {ALL_DISCOVERED count} unique buyers with relevant signals
+
+RULES:
+- Opening sentence: acknowledge what was searched and what was found
+  "We scanned Starbridge's database of 296K+ government and education entities for signals related to {product_category}..."
+- Second sentence: highlight the scope of the discovery
+  "Across {X} active signals, we identified {Y} SLED buyers with recent procurement activity, board discussions, or contract events relevant to {target_company}."
+- Third sentence (optional): tease the featured buyer
+  "Leading the list: {FEATURED_BUYER_NAME}, where [brief signal tease]."
+
+OUTPUT FORMAT:
+## Executive Summary
+
+{2-3 sentences}`,
+    detail: null,
+    qualityRules: [
+      'Must mention specific signal/buyer counts \u2014 no vague "several" or "many"',
+      'Must name Starbridge as the data source',
+      'Tone: confident, data-driven, not salesy'
+    ],
+    edgeCases: [
+      { label: 'Only 1 buyer found', action: 'Adjust language: "we identified a high-priority match" instead of plural buyers.', severity: 'skip' }
+    ],
+    outputSchema: {
+      'SECTION_EXEC_SUMMARY': 'string — markdown: ## Executive Summary + 2-3 sentences'
+    }
+  },
+
+  { id: 's9', phase: 'generate', num: '9', name: 'Featured Buyer Section', type: 'llm', parallel: true,
+    meta: 'LLM generates deep-dive: snapshot + signals + relevancy + key contact',
+    conditionalRun: { type: 'always' },
+    inputs: ['FEAT_PROFILE', 'FEAT_CONTACTS', 'FEAT_OPPORTUNITIES', 'FEAT_AI_CONTEXT', 'FEATURED_SIGNALS', 'product_description', 'campaign_signal', 'target_company'],
+    outputs: ['SECTION_FEATURED'],
+    tools: [],
+    prompt: `You are writing the Featured Buyer deep-dive for a Starbridge intel showcase report.
+
+TARGET COMPANY: {target_company}
+TARGET PRODUCT: {product_description}
+
+FEATURED BUYER PROFILE: {FEAT_PROFILE}
+FEATURED BUYER CONTACTS: {FEAT_CONTACTS}
+FEATURED BUYER OPPORTUNITIES: {FEAT_OPPORTUNITIES}
+FEATURED BUYER AI CONTEXT: {FEAT_AI_CONTEXT}
+TOP SIGNALS FROM DISCOVERY: {FEATURED_SIGNALS}
+
+YOUR TASK \u2014 generate 4 sub-sections:
+
+1. BUYER SNAPSHOT CARD
+   Pick the correct emoji and type label from profile.tags[]:
+     HigherEducation \u2192 \ud83c\udfdb\ufe0f Higher Education
+     SchoolDistrict \u2192 \ud83c\udfeb School District
+     City \u2192 \ud83c\udfd9\ufe0f City
+     County \u2192 \ud83c\udfe2 County
+     StateAgency \u2192 \ud83c\udfdb\ufe0f State Agency
+   Include: state, city, enrollment/population, budget, procurement score, website.
+   Format numbers with commas. Omit any field that's null.
+
+2. WHY THIS BUYER MATTERS (for {target_company})
+   Write 1-2 opening sentences + exactly 3 bullets.
+   Each bullet MUST:
+   - Reference a SPECIFIC signal, initiative, or data point
+   - Name the initiative, quote board language, or cite dollar amounts
+   - Explain WHY it creates an opening for {target_company}'s product
+   BAD: "They are investing in technology."
+   GOOD: "The Board of Governors approved a 'demonstration project' in Nov 2025 to create shared career services infrastructure across all 116 colleges."
+
+3. KEY CONTACT
+   Select 1 contact from FEAT_CONTACTS. Criteria:
+   - normalizedTitles match the product category
+   - Director-level or above
+   - emailVerified == true (HARD REQUIREMENT)
+   - worksAtBuyer == true
+   Include: name, title, email, phone (if available), why this person.
+
+4. WHAT'S HAPPENING NOW
+   1-2 paragraphs about the most urgent/recent signals. Include dates, deadlines, and dollar amounts. End each paragraph with source attribution: *(Board meeting, Jan 2026)*
+
+OUTPUT FORMAT:
+
+## \ud83d\udd25 Featured: {buyer_name}
+
+> {emoji}
+>
+> **{buyer_name}** | {type_label}
+>
+> **State:** {state} | **City:** {city} | **{size_label}:** {size_value}
+>
+> **Budget:** {budget} ({year}) | **Procurement Score:** {score}/100
+>
+> **Website:** [{url_display}]({url})
+
+### Why {buyer_name} Matters for {target_company}
+
+{opening sentences}
+
+- {bullet_1}
+- {bullet_2}
+- {bullet_3}
+
+### Key Contact
+
+> **{name}** \u2014 {title}
+>
+> **Email:** [{email}](mailto:{email}) \u2705
+>
+> **Phone:** {phone}
+
+**Why this contact:** {1 sentence rationale}
+
+### What's Happening Now
+
+{signal paragraphs with source attribution}`,
+    detail: null,
+    qualityRules: [
+      'Every bullet must name a specific initiative, program, or data point',
+      'Key contact must have emailVerified == true',
+      'Signal paragraphs must include dates or dollar amounts',
+      'No hallucinated data \u2014 every fact must come from FEAT_PROFILE, FEAT_OPPORTUNITIES, or FEAT_AI_CONTEXT'
+    ],
+    edgeCases: [
+      { label: 'FEAT_PROFILE is null', action: 'Minimal snapshot: buyer name + type from discovery data. Skip budget/score/website.', severity: 'degrade' },
+      { label: 'FEAT_CONTACTS is null', action: 'Omit Key Contact sub-section. Add note: "Contact data unavailable."', severity: 'degrade' },
+      { label: 'No contacts with verified email', action: 'Pick best overall contact. Add "\u26a0\ufe0f Email unverified" note.', severity: 'degrade' },
+      { label: 'FEAT_AI_CONTEXT is null', action: 'Rely on FEAT_OPPORTUNITIES and FEATURED_SIGNALS for signal paragraphs.', severity: 'degrade' }
+    ],
+    outputSchema: {
+      'SECTION_FEATURED': 'string — markdown: ## Featured + snapshot card + why it matters (3 bullets) + key contact + what\'s happening now'
+    }
+  },
+
+  { id: 's10', phase: 'generate', num: '10', name: 'Secondary Buyer Cards', type: 'llm', parallel: true,
+    meta: 'LLM generates compact cards for each secondary buyer \u2014 snapshot + signal + contact',
+    conditionalRun: { type: 'skip', rule: 'Outputs empty string if SECONDARY_BUYERS is empty' },
+    inputs: ['SEC_PROFILES', 'SEC_CONTACTS', 'SECONDARY_BUYERS', 'product_description', 'target_company'],
+    outputs: ['SECTION_SECONDARY'],
+    tools: [],
+    prompt: `Generate compact buyer cards for each secondary buyer in a Starbridge intel showcase.
+
+TARGET: {target_company}
+TARGET PRODUCT: {product_description}
+
+SECONDARY BUYERS (with top signals from discovery):
+{SECONDARY_BUYERS}
+
+SECONDARY BUYER PROFILES:
+{SEC_PROFILES}
+
+SECONDARY BUYER CONTACTS:
+{SEC_CONTACTS}
+
+For EACH secondary buyer, generate a card:
+
+1. HEADER: buyer name + type + state + size metric (enrollment/population)
+2. SIGNAL HIGHLIGHT: 1-2 sentences about their most relevant/urgent signal
+   - Must include a specific fact (date, dollar amount, initiative name)
+   - Connect it to why {target_company} should care
+3. KEY CONTACT: name + title + email
+   - Prefer emailVerified == true
+   - Prefer titles matching the product category
+
+OUTPUT FORMAT (repeat for each):
+
+### {buyer_name} \u2014 {type_label}, {state}
+
+> **{size_label}:** {size_value} | **Budget:** {budget}
+
+{1-2 sentence signal highlight}
+
+**Key Contact:** {name} \u2014 {title} ([{email}](mailto:{email}))
+
+---`,
+    detail: null,
+    qualityRules: [
+      'Each card must include at least 1 specific signal fact',
+      'Cards should be concise \u2014 4-6 lines max per buyer',
+      'Prefer verified email contacts'
+    ],
+    edgeCases: [
+      { label: 'Some secondary profiles unavailable', action: 'Generate cards with discovery data only (name + signal). Skip profile details.', severity: 'degrade' },
+      { label: 'No contacts for a secondary buyer', action: 'Omit Key Contact line for that card.', severity: 'skip' }
+    ],
+    outputSchema: {
+      'SECTION_SECONDARY': 'string — markdown: ## More Buyers + one card per secondary (header + signal + contact + divider)'
+    }
+  },
+
+  { id: 's11', phase: 'generate', num: '11', name: 'Starbridge CTA', type: 'llm', parallel: true,
+    meta: 'LLM writes a personalized "What Starbridge Can Do" section tailored to the target',
+    conditionalRun: { type: 'branch', rule: 'May re-run once if s14 validation fails CTA personalization check' },
+    inputs: ['target_company', 'product_description', 'SEARCH_STRATEGY', 'ALL_DISCOVERED'],
+    outputs: ['SECTION_CTA'],
+    tools: [],
+    prompt: `Write a personalized "What Starbridge Can Do for {target_company}" section for the end of an intel showcase report.
+
+TARGET: {target_company}
+PRODUCT: {product_description}
+SLED SEGMENTS IDENTIFIED: {SEARCH_STRATEGY.SLED_SEGMENTS}
+TOTAL BUYERS DISCOVERED: {ALL_DISCOVERED count}
+SIGNAL TYPES FOUND: {breakdown by type}
+
+RULES:
+- Personalize to their specific product category and SLED segments
+- Reference specific numbers from the discovery (don't say "many" \u2014 say "23 school districts")
+- Mention Starbridge's data scale that's relevant to THEIR market:
+  \u2022 296K+ government/education entities monitored
+  \u2022 107M+ board meeting records indexed
+  \u2022 44K+ active RFPs tracked
+  \u2022 98% contact accuracy rate
+- Frame benefits in terms of THEIR sales workflow:
+  \u2022 "Know when a district discusses {their product category} in a board meeting \u2014 before the RFP drops"
+  \u2022 "Get verified contacts for {relevant titles} at every target account"
+  \u2022 "See which {segments} are buying from your competitors, at what price"
+- End with a soft CTA, not a hard sell
+- NO jargon. NO "leverage", "synergy", "unlock".
+
+OUTPUT FORMAT:
+
+## \ud83d\ude80 What Starbridge Can Do for {target_company}
+
+{2-3 short paragraphs, personalized}
+
+*Want to see this for all your target accounts? [Let's set up your Starbridge workspace.]*`,
+    detail: null,
+    qualityRules: [
+      'Must reference specific discovery numbers, not generic claims',
+      'Must personalize to their SLED segments and product category',
+      'CTA should be soft \u2014 a question or invitation, not a demand',
+      'No marketing jargon'
+    ],
+    edgeCases: [
+      { label: 'Very few signals found', action: 'Emphasize data freshness and monitoring ("signals surface weekly") rather than volume.', severity: 'degrade' }
+    ],
+    outputSchema: {
+      'SECTION_CTA': 'string — markdown: ## What Starbridge Can Do + 2-3 personalized paragraphs + soft CTA'
+    }
+  },
+
+  { id: 's12', phase: 'generate', num: '12', name: 'Footer', type: 'template', parallel: true,
+    meta: 'Template fill \u2014 timestamp + data source attribution',
+    conditionalRun: { type: 'branch', rule: 'FEAT_AI_CONTEXT_AVAILABLE selects between two footer templates' },
+    inputs: ['CURRENT_DATE', 'FEAT_AI_CONTEXT_AVAILABLE'],
+    outputs: ['SECTION_FOOTER'],
+    tools: [],
+    prompt: null,
+    detail: `Template fill \u2014 no LLM call. Reads FEAT_AI_CONTEXT_AVAILABLE (true/false, never null) to select attribution line.
+
+If FEAT_AI_CONTEXT_AVAILABLE = true:
+---
+*Generated by Starbridge Intelligence \u2014 {month} {year}*
+*Data source: Starbridge buyer profiles, contacts, AI analysis, and opportunity database covering 296K+ SLED entities*
+
+If FEAT_AI_CONTEXT_AVAILABLE = false:
+---
+*Generated by Starbridge Intelligence \u2014 {month} {year}*
+*Data source: Starbridge buyer profiles, contacts, and opportunity database. AI analysis was unavailable for this report.*`,
+    qualityRules: [
+      'Footer date must match current month/year — validated deterministically in s14 (check #4)',
+      'Attribution line must accurately reflect data sources used — "AI analysis" only when FEAT_AI_CONTEXT_AVAILABLE = true'
+    ],
+    edgeCases: [
+      { label: 'CURRENT_DATE unavailable', action: 'Fall back to ISO timestamp from runtime environment. Should never happen — flag if it does.', severity: 'degrade' }
+    ],
+    outputSchema: {
+      'SECTION_FOOTER': 'string — markdown: --- divider + generated-by line + data source attribution'
+    }
+  },
+
+  // ─── Phase: Assemble ───
+  { id: 's13', phase: 'assemble', num: '13', name: 'Assemble Report', type: 'logic',
+    meta: 'Concatenate all sections in order, skip empty sections, clean up formatting',
+    conditionalRun: { type: 'always' },
+    inputs: ['SECTION_EXEC_SUMMARY', 'SECTION_FEATURED', 'SECTION_SECONDARY', 'SECTION_CTA', 'SECTION_FOOTER'],
+    outputs: ['REPORT_MARKDOWN'],
+    tools: [],
+    prompt: null,
+    detail: `Wait for ALL generation branches to complete, then concatenate in fixed order:
+
+1. SECTION_EXEC_SUMMARY     (always present)
+2. --- divider
+3. SECTION_FEATURED          (always present \u2014 core of the report)
+4. --- divider
+5. SECTION_SECONDARY         (may be empty if 0 secondaries)
+6. --- divider
+7. SECTION_CTA               (always present)
+8. --- divider
+9. SECTION_FOOTER            (always present)
+
+Parallel branches completing:
+  Branch A: s8 (Exec Summary) \u2014 fast, starts after s5
+  Branch B: s6 \u2192 s9 (Featured Intel \u2192 Featured Section) \u2014 CRITICAL PATH, slowest due to AI chat
+  Branch C: s7 \u2192 s10 (Secondary Intel \u2192 Secondary Cards)
+  Branch D: s11 (CTA) \u2014 fast, starts after s5
+  Branch E: s12 (Footer) \u2014 instant
+
+Cleanup rules:
+  \u2022 Remove any --- divider before/after an empty section
+  \u2022 Remove double blank lines
+  \u2022 Ensure one blank line before and after each --- divider
+
+\u2192 REPORT_MARKDOWN: the full assembled report as a single markdown string, ready for validation in s14.`,
+    qualityRules: [
+      'Minimum viable report: Exec Summary + Featured + CTA + Footer must all be present',
+      'No double --- dividers or trailing dividers at end of report',
+      'Section order must be fixed — never reorder sections regardless of content'
+    ],
+    edgeCases: [
+      { label: 'SECTION_SECONDARY is empty', action: 'Skip that block and its surrounding dividers.', severity: 'skip' },
+      { label: 'Multiple sections empty', action: 'Assembly still works \u2014 just fewer sections. Minimum viable set per quality rule above.', severity: 'degrade' }
+    ],
+    outputSchema: {
+      'REPORT_MARKDOWN': 'string — full assembled markdown: Exec Summary + --- + Featured + --- + Secondary + --- + CTA + --- + Footer'
+    }
+  },
+
+  { id: 's14', phase: 'assemble', num: '14', name: 'Validate Report', type: ['validate', 'llm'],
+    meta: '8-point quality checklist \u2014 5 deterministic + 3 LLM judgment calls',
+    conditionalRun: { type: 'branch', rule: 'Triggers s11 retry if CTA fails personalization (max 1 retry)' },
+    inputs: ['REPORT_MARKDOWN', 'FEAT_PROFILE', 'FEAT_CONTACTS', 'FEAT_OPPORTUNITIES', 'FEAT_AI_CONTEXT', 'SECONDARY_BUYERS'],
+    outputs: ['VALIDATED_REPORT_MARKDOWN'],
+    tools: [],
+    prompt: `You are validating a Starbridge intel brief before delivery. Check these items:
+
+REPORT: {REPORT_MARKDOWN}
+SOURCE DATA: {FEAT_PROFILE}, {FEAT_OPPORTUNITIES}, {FEAT_AI_CONTEXT}
+
+LLM CHECKS (you must verify these):
+
+Check A \u2014 SIGNAL SPECIFICITY: Every bullet and signal paragraph names a specific initiative, date, dollar amount, or board action. Flag any that are generic ("they invest in technology").
+
+Check B \u2014 NO HALLUCINATION: Every dollar amount, date, and initiative name in the report appears in the source data (FEAT_PROFILE, FEAT_OPPORTUNITIES, or FEAT_AI_CONTEXT). Flag any unverifiable fact.
+
+Check C \u2014 CTA RELEVANCE: The "What Starbridge Can Do" section references the target's actual product category and SLED segments, not generic sales intelligence claims.
+
+For each failing check: describe the issue and provide a corrected version.`,
+    detail: `Eight checks total. Five deterministic (code), three LLM (judgment):
+
+DETERMINISTIC CHECKS:
+1. Featured buyer name in report matches FEATURED_BUYER_NAME
+2. Key contact has emailVerified == true
+3. No contact entries with both email AND phone as "\u2014"
+4. Footer date matches current month/year
+5. All secondary buyer names match SECONDARY_BUYERS list
+
+LLM CHECKS:
+A. Signal specificity (no generic claims)
+B. No hallucinated data
+C. CTA personalization quality
+
+On failure: auto-fix deterministic issues; flag LLM issues for regeneration (max 1 retry per section).
+
+\u2192 VALIDATED_REPORT_MARKDOWN: the corrected version of REPORT_MARKDOWN with all deterministic fixes applied and LLM issues resolved. Identical to REPORT_MARKDOWN if all checks pass.
+
+Because s16 persists individual sections (section_exec_summary, section_featured, etc.) and raw intel data (feat_profile, feat_contacts, etc.), failed sections can be regenerated using cached intel without re-calling Starbridge APIs. This makes the s14\u2194s11 validation loop cheap \u2014 only the CTA section is regenerated, not the entire pipeline.`,
+    qualityRules: [],
+    edgeCases: [
+      { label: 'Hallucinated data detected', action: 'Strip unverifiable claims. If signal paragraph loses all facts, remove it and note gap.', severity: 'degrade' },
+      { label: 'No verified email contacts found in entire report', action: 'Add disclaimer note. Report is still deliverable.', severity: 'degrade' }
+    ],
+    outputSchema: {
+      'VALIDATED_REPORT_MARKDOWN': 'string — corrected markdown with deterministic fixes applied and LLM issues resolved'
+    }
+  },
+
+  { id: 's15', phase: 'assemble', num: '15', name: 'Publish to Notion', type: 'tool',
+    meta: 'Create a Notion page from validated report markdown via Notion MCP (mcp_Notion_notion_create_pages)',
+    conditionalRun: { type: 'always' },
+    inputs: ['VALIDATED_REPORT_MARKDOWN', 'FEATURED_BUYER_NAME', 'target_company'],
+    outputs: ['NOTION_PAGE_URL', 'NOTION_PAGE_ID'],
+    tools: ['mcp_Notion_notion_create_pages'],
+    prompt: null,
+    detail: `Create a Notion page containing the final intel report using the Notion MCP tool available through Datagen.
+
+Tool call (via Datagen SDK):
+  client.execute_tool("mcp_Notion_notion_create_pages", {
+    "parent": { "page_id": NOTION_REPORTS_PARENT_PAGE_ID },
+    "pages": [{
+      "properties": {
+        "title": "\u{1f4ca} {FEATURED_BUYER_NAME} \u2014 Intelligence Report for {target_company}"
+      },
+      "content": VALIDATED_REPORT_MARKDOWN
+    }]
+  })
+
+Parent configuration:
+  \u2022 NOTION_REPORTS_PARENT_PAGE_ID is an environment variable or agent config
+  \u2022 Points to the Notion page/database where all intel reports are collected
+  \u2022 If using a database parent, use "data_source_id" instead of "page_id"
+    and include any required database properties (Status, Date, etc.)
+
+Content format notes:
+  \u2022 The report markdown is already Notion-compatible (headings, blockquotes, tables, bold, links)
+  \u2022 Notion-flavored markdown supports standard markdown plus callouts, toggles, colored text
+  \u2022 Report title uses FEATURED_BUYER_NAME + target_company from the header section
+  \u2022 Blockquote cards (> emoji + snapshot) render natively in Notion
+  \u2022 Markdown tables render as Notion tables
+  \u2022 mailto: links in contact sections are preserved
+
+Notion MCP capabilities (from mcp_Notion_notion_create_pages):
+  \u2022 Standalone pages (no parent) or child pages (page_id parent)
+  \u2022 Database entries (data_source_id parent) with typed properties
+  \u2022 Full Notion-flavored Markdown for content
+  \u2022 Returns page URL and ID on success
+
+After creation:
+  \u2022 Extract the page URL from the response \u2192 NOTION_PAGE_URL
+  \u2022 Extract the page ID for potential future updates \u2192 NOTION_PAGE_ID
+  \u2022 The URL is included in the Slack dispatch message and Clay webhook response
+  \u2022 The URL is stored in the SQLite runs table (notion_url column)`,
+    qualityRules: [
+      'Page title must match the report header (FEATURED_BUYER_NAME + target_company)',
+      'Full validated report markdown must be included as page content \u2014 no truncation',
+      'Parent page/database must be configured via env var, not hardcoded',
+      'Page URL must be extractable from the Notion API response'
+    ],
+    edgeCases: [
+      { label: 'Notion API rate limit', action: 'Retry once after 1s delay. If still fails, return report without Notion URL \u2014 markdown is preserved in SQLite.', severity: 'degrade' },
+      { label: 'Notion MCP auth expired', action: 'Log error. Return report without Notion URL. Flag for operator attention in Slack message.', severity: 'degrade' },
+      { label: 'Content too large for single page', action: 'Notion pages support ~100K characters. Intel reports are well under this. If hit, truncate secondary buyer cards first.', severity: 'degrade' },
+      { label: 'Parent page not configured', action: 'Create as standalone workspace page (omit parent). Log warning \u2014 operator needs to set NOTION_REPORTS_PARENT_PAGE_ID.', severity: 'degrade' },
+      { label: 'Notion MCP not connected in Datagen', action: 'STOP Notion publish. Set NOTION_PAGE_URL = null. Report still deliverable via markdown in response JSON.', severity: 'degrade' }
+    ],
+    outputSchema: {
+      'NOTION_PAGE_URL': 'string — full Notion page URL (e.g., https://notion.so/...)',
+      'NOTION_PAGE_ID': 'string — Notion page UUID for future updates'
+    }
+  },
+
+  { id: 's16', phase: 'assemble', num: '16', name: 'Save & Return', type: ['sqlite', 'logic'],
+    meta: 'Update DB with all intel data, section content, Notion URL, and build final JSON response for Clay',
+    conditionalRun: { type: 'always' },
+    inputs: ['VALIDATED_REPORT_MARKDOWN', 'NOTION_PAGE_URL', 'NOTION_PAGE_ID', 'DB_RUN_ID', 'FEATURED_BUYER_ID', 'FEATURED_BUYER_NAME', 'SECONDARY_BUYERS', 'ALL_DISCOVERED', 'FEAT_PROFILE', 'FEAT_CONTACTS', 'FEAT_OPPORTUNITIES', 'FEAT_AI_CONTEXT', 'FEAT_AI_CONTEXT_AVAILABLE', 'SEC_PROFILES', 'SEC_CONTACTS', 'SECTION_EXEC_SUMMARY', 'SECTION_FEATURED', 'SECTION_SECONDARY', 'SECTION_CTA', 'SECTION_FOOTER'],
+    // Note: FEATURED_BUYER_ID, FEATURED_BUYER_NAME, SECONDARY_BUYERS, ALL_DISCOVERED are already
+    // persisted in s5. They're inputs here only for the response JSON, NOT re-written to SQLite.
+    outputs: ['final_response'],
+    tools: ['sqlite_update'],
+    prompt: null,
+    detail: `Two operations:
+
+1. UPDATE SQLite (keyed by DB_RUN_ID from s5):
+   UPDATE runs SET
+     -- selection results already persisted in s5 (not overwritten here)
+     -- raw intel data from s6/s7
+     feat_profile = ? (JSON),
+     feat_contacts = ? (JSON),
+     feat_opportunities = ? (JSON),
+     feat_ai_context = ?,
+     feat_ai_context_available = ?,
+     sec_profiles = ? (JSON),
+     sec_contacts = ? (JSON),
+     -- individual sections from s8-s12
+     section_exec_summary = ?,
+     section_featured = ?,
+     section_secondary = ?,
+     section_cta = ?,
+     section_footer = ?,
+     -- final assembled output
+     report_markdown = ?,
+     notion_url = ?,
+     status = 'completed',
+     completed_at = CURRENT_TIMESTAMP
+   WHERE id = DB_RUN_ID
+
+   Persisting raw intel + individual sections enables:
+     \u2022 Section-level regeneration without re-calling Starbridge APIs
+     \u2022 Re-running s14 validation on cached sections
+     \u2022 Debugging which specific section caused validation failures
+     \u2022 A/B testing different prompts on the same intel data
+     \u2022 Analytics on section quality across runs
+
+   INSERT INTO contacts \u2014 save all contacts discovered in s6/s7
+
+2. BUILD response JSON:
+{
+  "status": "success",
+  "runId": "<DB_RUN_ID>",
+  "notionUrl": "<NOTION_PAGE_URL>",
+  "featuredBuyer": {
+    "id": "<FEATURED_BUYER_ID>",
+    "name": "<FEATURED_BUYER_NAME>"
+  },
+  "secondaryBuyers": [<SECONDARY_BUYERS>],
+  "reportMarkdown": "<VALIDATED_REPORT_MARKDOWN>",
+  "metadata": {
+    "totalDiscovered": ALL_DISCOVERED.length,
+    "signalsFound": ALL_DISCOVERED.totalSignals,
+    "featuredProfileAvailable": true/false,
+    "featuredContactsCount": <n>,
+    "featuredAiChatAvailable": true/false,
+    "secondaryBuyersCount": <n>,
+    "sectionsGenerated": [...],
+    "notionPageId": "<NOTION_PAGE_ID>",
+    "generationTimestamp": "<ISO 8601>",
+    "priorRunsForDomain": <count>
+  }
+}
+
+The notionUrl is the key output \u2014 this is what Clay posts to Slack #intent-reports
+as the "intel is ready" link. If Notion publish failed (s15 edge case), notionUrl
+will be null and the Slack message should indicate the report is available as
+markdown only.`,
+    qualityRules: [
+      'Response JSON must include all required fields — status, runId, notionUrl, featuredBuyer, reportMarkdown, metadata',
+      'reportMarkdown in response must exactly match VALIDATED_REPORT_MARKDOWN — no post-validation modifications',
+      'SQLite run status must transition from "processing" to "completed" — no other final states'
+    ],
+    edgeCases: [
+      { label: 'SQLite update fails', action: 'Log error. Return response anyway \u2014 the report is the priority.', severity: 'skip' },
+      { label: 'NOTION_PAGE_URL is null', action: 'Include in response with null value. Slack message uses fallback text: "Report generated (Notion page unavailable)."', severity: 'skip' }
+    ],
+    outputSchema: {
+      'final_response': '{ status, runId, notionUrl, featuredBuyer: { id, name }, secondaryBuyers: [{ buyerId, buyerName }], reportMarkdown, metadata: { totalDiscovered, signalsFound, featuredProfileAvailable, featuredContactsCount, featuredAiChatAvailable, secondaryBuyersCount, sectionsGenerated: string[], notionPageId, generationTimestamp, priorRunsForDomain } }'
+    }
+  }
+];
+
+// ═══════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════
+
+const PHASE_LABELS = {
+  source: 'Data Source',
+  input: 'Input Validation',
+  analyze: 'Target Analysis',
+  discover: 'Signal Discovery',
+  select: 'Buyer Selection',
+  generate: 'Intel & Report Generation',
+  assemble: 'Assembly & Output'
+};
+
+const NODE_POSITIONS = {
+  s0:  { x: 490, y: 60 },
+  s1:  { x: 490, y: 320 },
+  s2:  { x: 490, y: 580 },
+  s3a: { x: 170, y: 850 },
+  s3b: { x: 490, y: 850 },
+  s3c: { x: 810, y: 850 },
+  s4:  { x: 490, y: 1100 },
+  s5:  { x: 490, y: 1280 },
+  s6:  { x: 60,  y: 1540 },
+  s7:  { x: 280, y: 1540 },
+  s8:  { x: 500, y: 1540 },
+  s11: { x: 720, y: 1540 },
+  s12: { x: 940, y: 1540 },
+  s9:  { x: 60,  y: 1710 },
+  s10: { x: 280, y: 1710 },
+  s13: { x: 490, y: 1970 },
+  s14: { x: 490, y: 2150 },
+  s15: { x: 490, y: 2330 },
+  s16: { x: 490, y: 2510 },
+};
+const NODE_W = 160;
+
+// ═══════════════════════════════════════════════════════
+// DERIVED DATA FLOW (single source of truth)
+// ═══════════════════════════════════════════════════════
+// INPUT_SOURCES: maps each variable name → producing step ID
+// Built from step.outputs so it can never go out of sync.
+const SYSTEM_INPUTS = { 'CURRENT_DATE': null };
+
+const INPUT_SOURCES = (function() {
+  var map = {};
+  STEPS.forEach(function(s) {
+    s.outputs.forEach(function(v) { map[v] = s.id; });
+  });
+  // Handle dot-notation sub-properties: resolve 'X.Y' → producer of 'X'
+  STEPS.forEach(function(s) {
+    s.inputs.forEach(function(v) {
+      if (v.indexOf('.') !== -1 && !map[v]) {
+        var base = v.split('.')[0];
+        if (map[base]) map[v] = map[base];
+      }
+    });
+  });
+  // System inputs (no producing step)
+  Object.keys(SYSTEM_INPUTS).forEach(function(k) { map[k] = SYSTEM_INPUTS[k]; });
+  return map;
+})();
+
+// COMPUTED_EDGES: Map of "sourceId->targetId" → { source, target, variables[] }
+// Built from step.inputs + INPUT_SOURCES
+const COMPUTED_EDGES = (function() {
+  var edges = {};
+  STEPS.forEach(function(targetStep) {
+    targetStep.inputs.forEach(function(varName) {
+      var base = varName.split('.')[0];
+      var sourceId = INPUT_SOURCES[varName] || INPUT_SOURCES[base];
+      if (!sourceId) return; // system input, no edge
+      var key = sourceId + '->' + targetStep.id;
+      if (!edges[key]) edges[key] = { source: sourceId, target: targetStep.id, variables: [] };
+      edges[key].variables.push(varName);
+    });
+  });
+  return edges;
+})();
+
+// VALIDATION_LOOPS: bidirectional retry edges (rendered as pink dotted arrows with arrowheads on both ends)
+const VALIDATION_LOOPS = [
+  { from: 's14', to: 's11', label: 'If <b>SECTION_CTA</b> fails quality check → regenerate with stronger personalization (max 1 retry)' }
+];
+
+// PHASE_ROMAN: maps phase name → roman numeral
+const PHASE_ROMAN = (function() {
+  var romans = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
+  var map = {}, count = 0;
+  STEPS.forEach(function(s) {
+    if (!map[s.phase]) map[s.phase] = romans[count++];
+  });
+  return map;
+})();
+
+// PARALLEL_GROUPS: maps step ID → group letter (A, B, C...) for consecutive parallel steps
+const PARALLEL_GROUPS = (function() {
+  var map = {}, code = 64, inGroup = false;
+  STEPS.forEach(function(s) {
+    if (s.parallel) {
+      if (!inGroup) { code++; inGroup = true; }
+      map[s.id] = String.fromCharCode(code);
+    } else {
+      inGroup = false;
+    }
+  });
+  return map;
+})();
+
+// Helper: get all outbound edges from a step
+function getOutboundEdges(stepId) {
+  var result = [];
+  Object.keys(COMPUTED_EDGES).forEach(function(key) {
+    if (COMPUTED_EDGES[key].source === stepId) result.push(COMPUTED_EDGES[key]);
+  });
+  // Sort by target step order
+  var order = STEPS.map(function(s) { return s.id; });
+  result.sort(function(a, b) {
+    return order.indexOf(a.target) - order.indexOf(b.target);
+  });
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════
+
+function getTypes(s) { return Array.isArray(s.type) ? s.type : [s.type]; }
+function primaryType(s) { return getTypes(s)[0]; }
+function hasType(s, t) { return getTypes(s).includes(t); }
+function typeBadges(s) {
+  return getTypes(s).map(t => '<span class="step-badge badge-' + t + '">' + t + '</span>').join(' ');
+}
+function escHtml(str) {
+  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function getSourceLabel(src) {
+  if (!src) return 'System';
+  const step = STEPS.find(s => s.id === src);
+  return step ? 'Step ' + step.num + ': ' + step.name : src;
+}
+
+function phaseMatch(phase, focus) {
+  if (focus === 'discover') return ['source','input','analyze','discover','select'].includes(phase);
+  if (focus === 'generate') return ['generate','assemble'].includes(phase);
+  return true;
+}
+
+function renderInputChips(inputs, targetStepId) {
+  if (!inputs.length) return '<span style="color:var(--text-dim);font-size:11px">None (entry point)</span>';
+  const groups = {};
+  inputs.forEach(function(name) {
+    const base = name.split('.')[0];
+    const src = INPUT_SOURCES[name] || INPUT_SOURCES[base] || null;
+    if (!groups[src]) groups[src] = [];
+    groups[src].push(name);
+  });
+
+  let html = '';
+  const order = [null].concat(STEPS.map(function(s) { return s.id; }));
+  const sortedKeys = Object.keys(groups).sort(function(a, b) {
+    return order.indexOf(a === 'null' ? null : a) - order.indexOf(b === 'null' ? null : b);
+  });
+
+  sortedKeys.forEach(function(src) {
+    const label = getSourceLabel(src);
+    const stepId = (src && src !== 'null') ? src : null;
+    const clickAttr = stepId ? ' onclick="navToStep(\'' + stepId + '\')"' : '';
+    const linkClass = stepId ? ' src-link' : '';
+    const edgeKey = stepId && targetStepId ? stepId + '->' + targetStepId : '';
+    const hoverAttr = edgeKey ? ' onmouseenter="highlightEdge(\'' + edgeKey + '\')" onmouseleave="unhighlightEdge()"' : '';
+
+    html += '<div class="input-group" data-edge="' + edgeKey + '"' + hoverAttr + '>';
+    html += '<div class="input-group-label">from <span class="' + linkClass + '"' + clickAttr + '>' + label + '</span></div>';
+    html += '<div class="data-flow">';
+    groups[src].forEach(function(n) { html += '<span class="data-chip chip-in">' + n + '</span>'; });
+    html += '</div></div>';
+  });
+  return html;
+}
+
+function renderFeedsInto(stepId) {
+  var outbound = getOutboundEdges(stepId);
+  var loops = VALIDATION_LOOPS.filter(function(l) { return l.from === stepId || l.to === stepId; });
+  if (!outbound.length && !loops.length) return '';
+  var html = '<div class="detail-section"><h3><span class="dot" style="background:var(--orange)"></span>Feeds Into</h3>';
+  // Validation loops first
+  loops.forEach(function(loop) {
+    var otherId = loop.from === stepId ? loop.to : loop.from;
+    var other = STEPS.find(function(x) { return x.id === otherId; });
+    if (!other) return;
+    var loopKey = loop.from + '<->' + loop.to;
+    var clickAttr = ' onclick="navToStep(\'' + otherId + '\')"';
+    html += '<div class="input-group validation-loop-row" data-edge="' + loopKey + '" onmouseenter="highlightEdge(\'' + loopKey + '\')" onmouseleave="unhighlightEdge()">';
+    html += '<div class="input-group-label"><span class="validation-loop-badge">\u21c4 validation loop</span> with <span class="src-link"' + clickAttr + '>Step ' + other.num + ': ' + other.name + '</span></div>';
+    html += '<div style="color:var(--text-dim);font-size:11px;margin-top:2px">' + loop.label + '</div>';
+    html += '</div>';
+  });
+  // Normal outbound edges
+  outbound.forEach(function(edge) {
+    var target = STEPS.find(function(x) { return x.id === edge.target; });
+    if (!target) return;
+    var clickAttr = ' onclick="navToStep(\'' + edge.target + '\')"';
+    html += '<div class="input-group" data-edge="' + edge.source + '->' + edge.target + '" onmouseenter="highlightEdge(\'' + edge.source + '->' + edge.target + '\')" onmouseleave="unhighlightEdge()">';
+    html += '<div class="input-group-label">to <span class="src-link"' + clickAttr + '>Step ' + target.num + ': ' + target.name + '</span></div>';
+    if (edge.variables.length) {
+      html += '<div class="data-flow">';
+      edge.variables.forEach(function(v) { html += '<span class="data-chip chip-feeds">' + v + '</span>'; });
+      html += '</div>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+function navToStep(id) {
+  if (state.view === 'diagram') { selectDiagramNode(id); }
+  else { selectStep(id); }
+}
+
+// ═══════════════════════════════════════════════════════
+// EDGE TOOLTIPS & HIGHLIGHTING
+// ═══════════════════════════════════════════════════════
+
+function showEdgeTooltip(event, edgeKey) {
+  var tooltip = document.getElementById('edgeTooltip');
+  var html = '';
+
+  // Check if this is a validation loop
+  var loop = VALIDATION_LOOPS.find(function(l) { return l.from + '<->' + l.to === edgeKey; });
+  if (loop) {
+    var fromStep = STEPS.find(function(s) { return s.id === loop.from; });
+    var toStep = STEPS.find(function(s) { return s.id === loop.to; });
+    if (!fromStep || !toStep) return;
+    html += '<div style="color:#ff69b4;font-weight:600;font-size:11px;margin-bottom:6px">\u21c4 Validation Loop</div>';
+    html += '<div style="color:var(--text-bright);font-size:10px;margin-bottom:6px">Step ' + fromStep.num + ' \u21c4 Step ' + toStep.num + '</div>';
+    html += '<div style="color:var(--text-dim);font-size:10px">' + loop.label + '</div>';
+  } else {
+    var edge = COMPUTED_EDGES[edgeKey];
+    if (!edge) return;
+    var sourceStep = STEPS.find(function(s) { return s.id === edge.source; });
+    var targetStep = STEPS.find(function(s) { return s.id === edge.target; });
+    if (!sourceStep || !targetStep) return;
+
+    html += '<div style="color:var(--text-bright);font-weight:600;font-size:11px;margin-bottom:6px">';
+    html += 'Step ' + sourceStep.num + ' \u2192 Step ' + targetStep.num;
+    html += '</div>';
+    html += '<div style="color:var(--text-dim);font-size:10px;margin-bottom:6px">';
+    html += sourceStep.name + ' \u2192 ' + targetStep.name;
+    html += '</div>';
+
+    if (edge.variables.length) {
+      html += '<div class="data-flow" style="gap:3px">';
+      edge.variables.forEach(function(v) {
+        html += '<span class="data-chip chip-in" style="font-size:9px;padding:2px 6px">' + v + '</span>';
+      });
+      html += '</div>';
+    }
+  }
+
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  tooltip.style.left = Math.min(event.clientX + 12, window.innerWidth - 300) + 'px';
+  tooltip.style.top = (event.clientY - 10) + 'px';
+}
+
+function hideEdgeTooltip() {
+  document.getElementById('edgeTooltip').style.display = 'none';
+}
+
+function highlightEdge(edgeKey) {
+  state.highlightedEdge = edgeKey;
+  var isLoop = edgeKey.indexOf('<->') !== -1;
+  if (isLoop) {
+    // Validation loop highlight
+    var parts = edgeKey.split('<->');
+    var visPath = document.getElementById('epath-vloop-' + parts[0] + '-' + parts[1]);
+    if (visPath) { visPath.setAttribute('stroke', '#ff69b4'); visPath.setAttribute('stroke-width', '3'); }
+  } else {
+    // Normal edge highlight
+    var visPath = document.getElementById('epath-' + edgeKey.replace('->','-'));
+    if (visPath) { visPath.setAttribute('stroke', '#58a6ff'); visPath.setAttribute('stroke-width', '3'); }
+    var visArrow = document.getElementById('earrow-' + edgeKey.replace('->','-'));
+    if (visArrow) visArrow.setAttribute('fill', '#58a6ff');
+  }
+  // Highlight matching detail panel rows
+  document.querySelectorAll('[data-edge]').forEach(function(el) {
+    el.classList.toggle('edge-highlighted', el.getAttribute('data-edge') === edgeKey);
+  });
+}
+
+function unhighlightEdge() {
+  // Restore SVG path styles
+  if (state.highlightedEdge) {
+    var isLoop = state.highlightedEdge.indexOf('<->') !== -1;
+    if (isLoop) {
+      var parts = state.highlightedEdge.split('<->');
+      var loop = VALIDATION_LOOPS.find(function(l) { return l.from === parts[0] && l.to === parts[1]; });
+      if (loop) {
+        var isActive = state.selectedStep === loop.from || state.selectedStep === loop.to;
+        var color = isActive ? 'rgba(255,105,180,0.8)' : 'rgba(255,105,180,0.35)';
+        var width = isActive ? 2.5 : 1.5;
+        var visPath = document.getElementById('epath-vloop-' + loop.from + '-' + loop.to);
+        if (visPath) { visPath.setAttribute('stroke', color); visPath.setAttribute('stroke-width', String(width)); }
+      }
+    } else {
+      var edge = COMPUTED_EDGES[state.highlightedEdge];
+      if (edge) {
+        var isActive = state.selectedStep === edge.source || state.selectedStep === edge.target;
+        var color = isActive ? '#58a6ff' : 'rgba(48,54,61,0.45)';
+        var width = isActive ? 2.5 : 1.5;
+        var visPath = document.getElementById('epath-' + state.highlightedEdge.replace('->','-'));
+        if (visPath) { visPath.setAttribute('stroke', color); visPath.setAttribute('stroke-width', String(width)); }
+        var visArrow = document.getElementById('earrow-' + state.highlightedEdge.replace('->','-'));
+        if (visArrow) visArrow.setAttribute('fill', color);
+      }
+    }
+  }
+  state.highlightedEdge = null;
+  document.querySelectorAll('.edge-highlighted').forEach(function(el) {
+    el.classList.remove('edge-highlighted');
+  });
+}
+
+function selectEdgeNode(edgeKey) {
+  var edge = COMPUTED_EDGES[edgeKey];
+  if (!edge) return;
+  // Select the target step to show its details
+  if (state.view === 'diagram') selectDiagramNode(edge.target);
+}
+
+// ═══════════════════════════════════════════════════════
+// VIEW SWITCHING
+// ═══════════════════════════════════════════════════════
+
+function setView(v) {
+  state.view = v;
+  var app = document.querySelector('.app');
+  document.getElementById('viewList').classList.toggle('active', v === 'list');
+  document.getElementById('viewDiagram').classList.toggle('active', v === 'diagram');
+  document.getElementById('zoomControls').style.display = v === 'diagram' ? 'flex' : 'none';
+  if (v === 'diagram') {
+    app.classList.add('diagram-mode');
+    renderDiagram();
+  } else {
+    app.classList.remove('diagram-mode');
+    closeDiagramDetail();
+    renderPipeline();
+    if (state.selectedStep) renderDetail(state.selectedStep);
+  }
+}
+
+function focusPhase(p) {
+  state.focusPhase = p;
+  document.querySelectorAll('.preset-btn').forEach(function(b) {
+    b.classList.toggle('active',
+      (p === 'all' && b.textContent === 'Full Pipeline') ||
+      (p === 'discover' && b.textContent === 'Discovery') ||
+      (p === 'generate' && b.textContent === 'Generation'));
+  });
+  if (state.view === 'diagram') renderDiagram(); else renderPipeline();
+}
+
+// ═══════════════════════════════════════════════════════
+// LIST VIEW
+// ═══════════════════════════════════════════════════════
+
+function renderPipeline() {
+  var el = document.getElementById('pipeline');
+  var html = '';
+  var lastPhase = '';
+  var inParallel = false;
+
+  STEPS.forEach(function(s) {
+    if (s.phase !== lastPhase) {
+      if (inParallel) { html += '</div>'; inParallel = false; }
+      html += '<div class="phase-label">' + PHASE_LABELS[s.phase] + '</div>';
+      lastPhase = s.phase;
+    }
+    if (s.parallel && !inParallel) { html += '<div class="parallel-group">'; inParallel = true; }
+    if (!s.parallel && inParallel) { html += '</div>'; inParallel = false; }
+
+    var dimmed = state.focusPhase !== 'all' && !phaseMatch(s.phase, state.focusPhase);
+    var selected = state.selectedStep === s.id;
+    html += '<div class="step ' + (selected ? 'selected' : '') + ' ' + (dimmed ? 'dimmed' : '') + '" onclick="selectStep(\'' + s.id + '\')" id="step-' + s.id + '">';
+    html += '<div class="step-num">' + typeBadges(s) + ' Step ' + s.num + '</div>';
+    html += '<div class="step-name">' + s.name + '</div>';
+    html += '<div class="step-meta">' + s.meta + '</div>';
+    html += '</div>';
+  });
+
+  if (inParallel) html += '</div>';
+  el.innerHTML = html;
+}
+
+function selectStep(id) {
+  state.selectedStep = id;
+  renderPipeline();
+  renderDetail(id);
+  updatePrompt();
+}
+
+function renderDetail(id) {
+  var s = STEPS.find(function(x) { return x.id === id; });
+  var el = document.getElementById('detail');
+  if (!s) { el.innerHTML = '<div class="detail-empty">Click a step to see details</div>'; return; }
+
+  var html = '<h2>Step ' + s.num + ': ' + s.name + '</h2>';
+  html += '<div class="subtitle">' + s.meta + '</div>';
+
+  // Conditional run
+  if (s.conditionalRun) {
+    var crType = s.conditionalRun.type;
+    var crLabel = crType === 'always' ? 'Always runs' : crType === 'stop' ? 'Hard stop' : crType === 'skip' ? 'Conditional skip' : 'Branches';
+    var crText = s.conditionalRun.rule ? crLabel + ' \u2014 ' + s.conditionalRun.rule : crLabel;
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--text-bright)"></span>Conditional Run</h3>';
+    html += '<div class="conditional-run conditional-run-' + crType + '">' + crText + '</div>';
+    html += '</div>';
+  }
+
+  // Tools
+  if (s.tools.length) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--cyan)"></span>Tool Calls</h3><div class="data-flow">';
+    s.tools.forEach(function(t) { html += '<span class="data-chip chip-tool">' + t + '</span>'; });
+    html += '</div></div>';
+  }
+
+  // Inputs (grouped by source)
+  html += '<div class="detail-section"><h3><span class="dot" style="background:var(--blue)"></span>Data In</h3>';
+  html += renderInputChips(s.inputs, s.id);
+  html += '</div>';
+
+  // Outputs
+  html += '<div class="detail-section"><h3><span class="dot" style="background:var(--green)"></span>Data Out</h3>';
+  if (s.outputSchema) {
+    html += '<div class="output-schema">';
+    s.outputs.forEach(function(d) {
+      var schema = s.outputSchema[d];
+      if (schema) {
+        var isComplex = schema.indexOf('{') !== -1 || schema.indexOf('[') !== -1;
+        html += '<div class="schema-row">';
+        html += '<span class="schema-name">' + d + '</span>';
+        if (isComplex) {
+          html += '<pre class="schema-type">' + schema.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+        } else {
+          html += '<span class="schema-type-inline">' + schema.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>';
+        }
+        html += '</div>';
+      }
+    });
+    html += '</div>';
+  } else {
+    html += '<div class="data-flow">';
+    s.outputs.forEach(function(d) { html += '<span class="data-chip chip-out">' + d + '</span>'; });
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Feeds into (derived from COMPUTED_EDGES)
+  html += renderFeedsInto(s.id);
+
+  // Prompt / Logic / Template
+  if (s.prompt || s.detail) {
+    var pt = primaryType(s);
+    var isHybrid = getTypes(s).length > 1;
+    if (isHybrid && s.detail) {
+      var detailLabel = pt === 'tool' ? 'Tool Logic' : pt === 'validate' ? 'Validation Logic' : pt === 'logic' ? 'Logic' : pt === 'sqlite' ? 'DB Operations' : 'Detail';
+      var detailColor = pt === 'tool' ? 'var(--cyan)' : pt === 'validate' ? 'var(--red)' : pt === 'sqlite' ? 'var(--sqlite-border)' : 'var(--orange)';
+      html += '<div class="detail-section"><h3><span class="dot" style="background:' + detailColor + '"></span>' + detailLabel + '</h3>';
+      html += '<div class="prompt-block">' + escHtml(s.detail) + '</div></div>';
+    }
+    if (hasType(s, 'llm') && s.prompt) {
+      html += '<div class="detail-section"><h3><span class="dot" style="background:var(--purple)"></span>LLM Prompt</h3>';
+      var saved = state.editedPrompts[s.id] || s.prompt;
+      html += '<div class="edit-hint">Click to edit this prompt. Changes update the copy output below.</div>';
+      html += '<div class="prompt-block"><div class="editable" contenteditable="true" id="promptEdit-' + s.id + '" oninput="onPromptEdit(\'' + s.id + '\')">' + escHtml(saved) + '</div></div></div>';
+    }
+    if (!hasType(s, 'llm') && s.prompt) {
+      html += '<div class="detail-section"><h3><span class="dot" style="background:var(--purple)"></span>Prompt</h3>';
+      html += '<div class="prompt-block">' + escHtml(s.prompt) + '</div></div>';
+    }
+    if (!isHybrid && s.detail) {
+      var dLabel = pt === 'template' ? 'Template' : pt === 'validate' ? 'Validation' : pt === 'llm' ? 'Detail' : pt === 'sqlite' ? 'DB Operations' : 'Logic';
+      var dColor = pt === 'template' ? 'var(--blue)' : pt === 'validate' ? 'var(--red)' : pt === 'sqlite' ? 'var(--sqlite-border)' : pt === 'llm' ? 'var(--purple)' : 'var(--orange)';
+      html += '<div class="detail-section"><h3><span class="dot" style="background:' + dColor + '"></span>' + dLabel + '</h3>';
+      html += '<div class="prompt-block">' + escHtml(s.detail) + '</div></div>';
+    }
+  }
+
+  // Quality rules
+  if (s.qualityRules && s.qualityRules.length) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--red)"></span>Quality Rules</h3>';
+    s.qualityRules.forEach(function(r) { html += '<div class="quality-rule">' + r + '</div>'; });
+    html += '</div>';
+  }
+
+  // Edge cases
+  if (s.edgeCases && s.edgeCases.length) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--orange)"></span>Errors &amp; Fallbacks</h3>';
+    s.edgeCases.forEach(function(ec) {
+      var sev = ec.severity || 'degrade';
+      var sevLabel = sev === 'stop' ? 'STOP' : sev === 'skip' ? 'SKIP' : 'DEGRADE';
+      html += '<div class="edge-case ec-' + sev + '"><span class="ec-severity">' + sevLabel + '</span><span class="ec-label">' + ec.label + '</span><span class="ec-action">' + ec.action + '</span></div>';
+    });
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════
+// DIAGRAM VIEW
+// ═══════════════════════════════════════════════════════
+
+function zoomDiagram(delta) {
+  if (delta === 0) {
+    var wrap = document.getElementById('diagramWrap');
+    var viewH = wrap.clientHeight;
+    var viewW = wrap.clientWidth;
+    var maxX = 0, maxY = 0;
+    Object.values(NODE_POSITIONS).forEach(function(p) {
+      if (p.x + NODE_W + 60 > maxX) maxX = p.x + NODE_W + 60;
+      if (p.y + 120 > maxY) maxY = p.y + 120;
+    });
+    state.zoom = Math.min(viewW / (maxX + 40), viewH / (maxY + 40), 1.5);
+    state.zoom = Math.round(state.zoom * 20) / 20;
+  } else {
+    state.zoom = Math.max(0.2, Math.min(2.0, state.zoom + delta));
+    state.zoom = Math.round(state.zoom * 20) / 20;
+  }
+  applyZoom();
+}
+
+function applyZoom() {
+  var canvas = document.getElementById('diagramCanvas');
+  canvas.style.transform = 'scale(' + state.zoom + ')';
+  document.getElementById('zoomLevel').textContent = Math.round(state.zoom * 100) + '%';
+}
+
+function renderDiagram() {
+  var nodesEl = document.getElementById('diagramNodes');
+  var svgEl = document.getElementById('diagramSvg');
+  var canvas = document.getElementById('diagramCanvas');
+
+  // Calculate canvas bounds
+  var maxX = 0, maxY = 0;
+  Object.values(NODE_POSITIONS).forEach(function(p) {
+    if (p.x + NODE_W + 60 > maxX) maxX = p.x + NODE_W + 60;
+    if (p.y + 120 > maxY) maxY = p.y + 120;
+  });
+  var canvasW = maxX + 80;
+  var canvasH = maxY + 80;
+
+  canvas.style.width = canvasW + 'px';
+  canvas.style.height = canvasH + 'px';
+  nodesEl.style.width = canvasW + 'px';
+  nodesEl.style.height = canvasH + 'px';
+  svgEl.setAttribute('width', canvasW);
+  svgEl.setAttribute('height', canvasH);
+  svgEl.style.width = canvasW + 'px';
+  svgEl.style.height = canvasH + 'px';
+
+  applyZoom();
+
+  // Phase section backgrounds (rendered first → paint behind nodes and groups)
+  var nodesHtml = '';
+  var phaseGroups = {};
+  STEPS.forEach(function(s) {
+    var pos = NODE_POSITIONS[s.id];
+    if (!pos) return;
+    if (!phaseGroups[s.phase]) phaseGroups[s.phase] = { label: PHASE_LABELS[s.phase], nodes: [] };
+    phaseGroups[s.phase].nodes.push(pos);
+  });
+  var NODE_H = 85;
+  var LABEL_H = 16, MIN_W = 260;
+  var PHASE_PADS = { generate: { x: 60, y: 56 }, discover: { x: 56, y: 50 } };
+  var DEFAULT_PAD = { x: 28, y: 20 };
+  Object.keys(phaseGroups).forEach(function(phase) {
+    var g = phaseGroups[phase];
+    var pad = PHASE_PADS[phase] || DEFAULT_PAD;
+    var padX = pad.x, padY = pad.y;
+    var minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
+    g.nodes.forEach(function(p) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x + NODE_W > maxX) maxX = p.x + NODE_W;
+      if (p.y + NODE_H > maxY) maxY = p.y + NODE_H;
+    });
+    var dimmed = state.focusPhase !== 'all' && !phaseMatch(phase, state.focusPhase);
+    var contentW = maxX - minX + padX * 2;
+    var centerX = (minX + maxX) / 2;
+    var sW = Math.max(contentW, MIN_W);
+    var sL = centerX - sW / 2;
+    var sT = minY - padY - LABEL_H;
+    var sH = maxY - minY + padY * 2 + LABEL_H * 2;
+    nodesHtml += '<div class="dphase-section' + (dimmed ? ' dphase-dimmed' : '') + '" style="left:' + sL + 'px;top:' + sT + 'px;width:' + sW + 'px;height:' + sH + 'px">';
+    nodesHtml += '<span class="dphase-section-label">' + g.label + '</span></div>';
+  });
+
+  // Draw nodes
+  STEPS.forEach(function(s) {
+    var pos = NODE_POSITIONS[s.id];
+    if (!pos) return;
+    var dimmed = state.focusPhase !== 'all' && !phaseMatch(s.phase, state.focusPhase);
+    var selected = state.selectedStep === s.id;
+    nodesHtml += '<div class="dnode dnode-' + primaryType(s) + ' ' + (selected ? 'dnode-selected' : '') + ' ' + (dimmed ? 'dnode-dimmed' : '') + '"';
+    nodesHtml += ' style="left:' + pos.x + 'px;top:' + pos.y + 'px;width:' + NODE_W + 'px"';
+    nodesHtml += ' onclick="selectDiagramNode(\'' + s.id + '\')" id="dnode-' + s.id + '">';
+    nodesHtml += '<div class="dnode-num">' + typeBadges(s) + ' ' + s.num + '</div>';
+    nodesHtml += '<div class="dnode-name">' + s.name + '</div>';
+    nodesHtml += '<div class="dnode-meta">' + (s.meta.length > 50 ? s.meta.slice(0, 47) + '...' : s.meta) + '</div>';
+    nodesHtml += '</div>';
+  });
+
+  // Parallel group: Discovery (s3a, s3b, s3c)
+  var p1L = NODE_POSITIONS.s3a.x - 16, p1T = NODE_POSITIONS.s3a.y - 24;
+  var p1R = NODE_POSITIONS.s3c.x + NODE_W + 16, p1B = NODE_POSITIONS.s3a.y + 110;
+  nodesHtml += '<div class="dgroup-parallel" style="left:' + p1L + 'px;top:' + p1T + 'px;width:' + (p1R-p1L) + 'px;height:' + (p1B-p1T) + 'px">';
+  nodesHtml += '<span class="dgroup-parallel-label">PARALLEL \u2014 3 discovery searches</span></div>';
+
+  // Parallel group: Intel + Generation (s6, s7, s8, s9, s10, s11, s12)
+  var p2L = NODE_POSITIONS.s6.x - 40, p2T = NODE_POSITIONS.s6.y - 48;
+  var p2R = NODE_POSITIONS.s12.x + NODE_W + 40, p2B = NODE_POSITIONS.s9.y + 132;
+  nodesHtml += '<div class="dgroup-parallel" style="left:' + p2L + 'px;top:' + p2T + 'px;width:' + (p2R-p2L) + 'px;height:' + (p2B-p2T) + 'px">';
+  nodesHtml += '<span class="dgroup-parallel-label">PARALLEL \u2014 5 branches: 2 intel chains + 3 generators</span></div>';
+
+  // Sequential sub-chain: s6 -> s9
+  var sq1L = NODE_POSITIONS.s6.x - 20, sq1T = NODE_POSITIONS.s6.y - 24;
+  var sq1R = NODE_POSITIONS.s6.x + NODE_W + 20, sq1B = NODE_POSITIONS.s9.y + 112;
+  nodesHtml += '<div class="dgroup-sequential" style="left:' + sq1L + 'px;top:' + sq1T + 'px;width:' + (sq1R-sq1L) + 'px;height:' + (sq1B-sq1T) + 'px">';
+  nodesHtml += '<span class="dgroup-sequential-label">SEQUENTIAL</span></div>';
+
+  // Sequential sub-chain: s7 -> s10
+  var sq2L = NODE_POSITIONS.s7.x - 20, sq2T = NODE_POSITIONS.s7.y - 24;
+  var sq2R = NODE_POSITIONS.s7.x + NODE_W + 20, sq2B = NODE_POSITIONS.s10.y + 112;
+  nodesHtml += '<div class="dgroup-sequential" style="left:' + sq2L + 'px;top:' + sq2T + 'px;width:' + (sq2R-sq2L) + 'px;height:' + (sq2B-sq2T) + 'px">';
+  nodesHtml += '<span class="dgroup-sequential-label">SEQUENTIAL</span></div>';
+
+  nodesEl.innerHTML = nodesHtml;
+
+  // Draw SVG arrows from COMPUTED_EDGES
+  var svgHtml = '';
+  var edgeKeys = Object.keys(COMPUTED_EDGES);
+
+  // Count incoming edges per target for spread calculation
+  var incomingEdges = {};
+  edgeKeys.forEach(function(key) {
+    var edge = COMPUTED_EDGES[key];
+    if (!incomingEdges[edge.target]) incomingEdges[edge.target] = [];
+    incomingEdges[edge.target].push(edge.source);
+  });
+
+  function spreadX(nodeX, index, count) {
+    if (count <= 1) return nodeX + NODE_W / 2;
+    var pad = NODE_W / 2 - Math.min(count - 1, 6) * 5;
+    var usable = NODE_W - pad * 2;
+    return nodeX + pad + (index / (count - 1)) * usable;
+  }
+
+  var inIdx = {};
+  edgeKeys.forEach(function(key) {
+    var edge = COMPUTED_EDGES[key];
+    var from = NODE_POSITIONS[edge.source];
+    var to = NODE_POSITIONS[edge.target];
+    if (!from || !to) return;
+
+    var isActive = state.selectedStep === edge.source || state.selectedStep === edge.target;
+    var isHighlighted = state.highlightedEdge === key;
+
+    var fromCx = from.x + NODE_W / 2;
+    var fromBottom = from.y + 85;
+
+    var inCount = (incomingEdges[edge.target] || []).length;
+    var iIdx = inIdx[edge.target] || 0;
+    inIdx[edge.target] = iIdx + 1;
+    var toCx = spreadX(to.x, iIdx, inCount);
+    var toTop = to.y;
+
+    var dy = toTop - fromBottom;
+    var cpOffset = Math.max(40, Math.abs(dy) * 0.35);
+
+    // Edge styling
+    var color, width;
+    if (isHighlighted) {
+      color = '#58a6ff'; width = 3;
+    } else if (isActive) {
+      color = '#58a6ff'; width = 2.5;
+    } else {
+      color = 'rgba(48,54,61,0.45)'; width = 1.5;
+    }
+
+    var arrowLen = 8;
+    var pathEndY = toTop - arrowLen;
+    var pathD = 'M ' + fromCx + ' ' + fromBottom + ' C ' + fromCx + ' ' + (fromBottom + cpOffset) + ', ' + toCx + ' ' + (toTop - cpOffset) + ', ' + toCx + ' ' + pathEndY;
+
+    // Visible path
+    var pathId = key.replace('->','-');
+    svgHtml += '<path id="epath-' + pathId + '" d="' + pathD + '" fill="none" stroke="' + color + '" stroke-width="' + width + '"/>';
+    // Arrow tip
+    svgHtml += '<polygon id="earrow-' + pathId + '" points="' + (toCx-4) + ',' + pathEndY + ' ' + (toCx+4) + ',' + pathEndY + ' ' + toCx + ',' + toTop + '" fill="' + color + '"/>';
+
+    // Invisible hit target for hover tooltip
+    svgHtml += '<path d="' + pathD + '" fill="none" stroke="transparent" stroke-width="14" style="pointer-events:stroke;cursor:pointer" data-edge="' + key + '" onmouseenter="showEdgeTooltip(event,\'' + key + '\')" onmouseleave="hideEdgeTooltip()" onclick="selectEdgeNode(\'' + key + '\')"/>';
+
+  });
+
+  // Validation loop arrows (pink, dotted, bidirectional)
+  VALIDATION_LOOPS.forEach(function(loop) {
+    var from = NODE_POSITIONS[loop.from];
+    var to = NODE_POSITIONS[loop.to];
+    if (!from || !to) return;
+    var loopKey = loop.from + '<->' + loop.to;
+    var isHighlighted = state.highlightedEdge === loopKey;
+    var isActive = state.selectedStep === loop.from || state.selectedStep === loop.to;
+
+    var color = isHighlighted ? '#ff69b4' : (isActive ? 'rgba(255,105,180,0.8)' : 'rgba(255,105,180,0.35)');
+    var width = isHighlighted ? 3 : (isActive ? 2.5 : 1.5);
+
+    // Draw from right side of s14 up to right side of s11
+    var fromX = from.x + NODE_W + 8;
+    var fromY = from.y + 42;
+    var toX = to.x + NODE_W + 8;
+    var toY = to.y + 42;
+
+    // Curve outward to the right
+    var bulge = 60;
+    var cpX = Math.max(fromX, toX) + bulge;
+    var pathD = 'M ' + fromX + ' ' + fromY + ' C ' + cpX + ' ' + fromY + ', ' + cpX + ' ' + toY + ', ' + toX + ' ' + toY;
+
+    // Arrow tip at s11 end (pointing left into the node)
+    var a1 = '<polygon points="' + toX + ',' + toY + ' ' + (toX+7) + ',' + (toY-4) + ' ' + (toX+7) + ',' + (toY+4) + '" fill="' + color + '"/>';
+    // Arrow tip at s14 end (pointing left into the node)
+    var a2 = '<polygon points="' + fromX + ',' + fromY + ' ' + (fromX+7) + ',' + (fromY-4) + ' ' + (fromX+7) + ',' + (fromY+4) + '" fill="' + color + '"/>';
+
+    svgHtml += '<path id="epath-vloop-' + loop.from + '-' + loop.to + '" d="' + pathD + '" fill="none" stroke="' + color + '" stroke-width="' + width + '" stroke-dasharray="4,4"/>';
+    svgHtml += a1 + a2;
+    // Invisible hit target
+    svgHtml += '<path d="' + pathD + '" fill="none" stroke="transparent" stroke-width="14" style="pointer-events:stroke;cursor:pointer" data-edge="' + loopKey + '" onmouseenter="showEdgeTooltip(event,\'' + loopKey + '\')" onmouseleave="hideEdgeTooltip()"/>';
+  });
+
+  svgEl.innerHTML = svgHtml;
+}
+
+function selectDiagramNode(id) {
+  state.selectedStep = id;
+  renderDiagram();
+  showDiagramDetail(id);
+  updatePrompt();
+}
+
+function showDiagramDetail(id) {
+  var s = STEPS.find(function(x) { return x.id === id; });
+  var el = document.getElementById('diagramDetail');
+  if (!s) { closeDiagramDetail(); return; }
+
+  var html = '<button class="detail-close" onclick="closeDiagramDetail()">&times;</button>';
+  html += '<h2 style="font-size:16px;font-weight:600;color:var(--text-bright);margin-bottom:4px;padding-right:30px">Step ' + s.num + ': ' + s.name + '</h2>';
+  html += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px">' + s.meta + '</div>';
+
+  // Conditional run
+  if (s.conditionalRun) {
+    var crType = s.conditionalRun.type;
+    var crLabel = crType === 'always' ? 'Always runs' : crType === 'stop' ? 'Hard stop' : crType === 'skip' ? 'Conditional skip' : 'Branches';
+    var crText = s.conditionalRun.rule ? crLabel + ' \u2014 ' + s.conditionalRun.rule : crLabel;
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--text-bright)"></span>Conditional Run</h3>';
+    html += '<div class="conditional-run conditional-run-' + crType + '">' + crText + '</div>';
+    html += '</div>';
+  }
+
+  // Tools
+  if (s.tools.length) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--cyan)"></span>Tool Calls</h3><div class="data-flow">';
+    s.tools.forEach(function(t) { html += '<span class="data-chip chip-tool">' + t + '</span>'; });
+    html += '</div></div>';
+  }
+
+  // Inputs (grouped by source)
+  html += '<div class="detail-section"><h3><span class="dot" style="background:var(--blue)"></span>Data In</h3>';
+  html += renderInputChips(s.inputs, s.id);
+  html += '</div>';
+
+  // Outputs
+  html += '<div class="detail-section"><h3><span class="dot" style="background:var(--green)"></span>Data Out</h3>';
+  if (s.outputSchema) {
+    html += '<div class="output-schema">';
+    s.outputs.forEach(function(d) {
+      var schema = s.outputSchema[d];
+      if (schema) {
+        var isComplex = schema.indexOf('{') !== -1 || schema.indexOf('[') !== -1;
+        html += '<div class="schema-row">';
+        html += '<span class="schema-name">' + d + '</span>';
+        if (isComplex) {
+          html += '<pre class="schema-type">' + schema.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+        } else {
+          html += '<span class="schema-type-inline">' + schema.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>';
+        }
+        html += '</div>';
+      }
+    });
+    html += '</div>';
+  } else {
+    html += '<div class="data-flow">';
+    s.outputs.forEach(function(d) { html += '<span class="data-chip chip-out">' + d + '</span>'; });
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Feeds into (derived from COMPUTED_EDGES)
+  html += renderFeedsInto(s.id);
+
+  // Prompt / Logic / Template
+  if (s.prompt || s.detail) {
+    var pt = primaryType(s);
+    var isHybrid = getTypes(s).length > 1;
+    if (isHybrid && s.detail) {
+      var detailLabel = pt === 'tool' ? 'Tool Logic' : pt === 'validate' ? 'Validation Logic' : pt === 'logic' ? 'Logic' : pt === 'sqlite' ? 'DB Operations' : 'Detail';
+      var detailColor = pt === 'tool' ? 'var(--cyan)' : pt === 'validate' ? 'var(--red)' : pt === 'sqlite' ? 'var(--sqlite-border)' : 'var(--orange)';
+      html += '<div class="detail-section"><h3><span class="dot" style="background:' + detailColor + '"></span>' + detailLabel + '</h3>';
+      html += '<div class="prompt-block">' + escHtml(s.detail) + '</div></div>';
+    }
+    if (hasType(s, 'llm') && s.prompt) {
+      html += '<div class="detail-section"><h3><span class="dot" style="background:var(--purple)"></span>LLM Prompt</h3>';
+      var saved = state.editedPrompts[s.id] || s.prompt;
+      html += '<div class="edit-hint">Click to edit this prompt. Changes update the copy output below.</div>';
+      html += '<div class="prompt-block"><div class="editable" contenteditable="true" id="promptEdit-' + s.id + '" oninput="onPromptEdit(\'' + s.id + '\')">' + escHtml(saved) + '</div></div></div>';
+    }
+    if (!hasType(s, 'llm') && s.prompt) {
+      html += '<div class="detail-section"><h3><span class="dot" style="background:var(--purple)"></span>Prompt</h3>';
+      html += '<div class="prompt-block">' + escHtml(s.prompt) + '</div></div>';
+    }
+    if (!isHybrid && s.detail) {
+      var dLabel = pt === 'template' ? 'Template' : pt === 'validate' ? 'Validation' : pt === 'llm' ? 'Detail' : pt === 'sqlite' ? 'DB Operations' : 'Logic';
+      var dColor = pt === 'template' ? 'var(--blue)' : pt === 'validate' ? 'var(--red)' : pt === 'sqlite' ? 'var(--sqlite-border)' : pt === 'llm' ? 'var(--purple)' : 'var(--orange)';
+      html += '<div class="detail-section"><h3><span class="dot" style="background:' + dColor + '"></span>' + dLabel + '</h3>';
+      html += '<div class="prompt-block">' + escHtml(s.detail) + '</div></div>';
+    }
+  }
+
+  // Quality rules
+  if (s.qualityRules && s.qualityRules.length) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--red)"></span>Quality Rules</h3>';
+    s.qualityRules.forEach(function(r) { html += '<div class="quality-rule">' + r + '</div>'; });
+    html += '</div>';
+  }
+
+  // Edge cases
+  if (s.edgeCases && s.edgeCases.length) {
+    html += '<div class="detail-section"><h3><span class="dot" style="background:var(--orange)"></span>Errors &amp; Fallbacks</h3>';
+    s.edgeCases.forEach(function(ec) {
+      var sev = ec.severity || 'degrade';
+      var sevLabel = sev === 'stop' ? 'STOP' : sev === 'skip' ? 'SKIP' : 'DEGRADE';
+      html += '<div class="edge-case ec-' + sev + '"><span class="ec-severity">' + sevLabel + '</span><span class="ec-label">' + ec.label + '</span><span class="ec-action">' + ec.action + '</span></div>';
+    });
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+  el.classList.add('visible');
+}
+
+function closeDiagramDetail() {
+  document.getElementById('diagramDetail').classList.remove('visible');
+  state.selectedStep = null;
+  if (state.view === 'diagram') renderDiagram();
+}
+
+// ═══════════════════════════════════════════════════════
+// PROMPT OUTPUT BAR
+// ═══════════════════════════════════════════════════════
+
+function onPromptEdit(id) {
+  var el = document.getElementById('promptEdit-' + id);
+  if (el) { state.editedPrompts[id] = el.innerText; updatePrompt(); }
+}
+
+function generateStepMarkdown(s) {
+  var md = '';
+
+  // Header
+  md += '## Step ' + s.num + ': ' + s.name + '\n\n';
+  md += '> ' + s.meta + '\n\n';
+
+  // Metadata
+  var types = getTypes(s).join(' + ');
+  var exec = s.parallel ? 'parallel (Group ' + PARALLEL_GROUPS[s.id] + ')' : 'sequential';
+  md += '### Metadata\n\n';
+  md += '- **Node Step ID:** ' + s.id + '\n';
+  md += '- **Node Type:** ' + types + '\n';
+  md += '- **Node Execution:** ' + exec + '\n';
+
+  // Conditional Run
+  if (s.conditionalRun) {
+    var crType = s.conditionalRun.type;
+    var crLabel = crType === 'always' ? 'Always runs' : crType === 'stop' ? 'Hard stop' : crType === 'skip' ? 'Conditional skip' : 'Branches';
+    md += '\n### Conditional Run\n\n';
+    md += '**' + crLabel + '**' + (s.conditionalRun.rule ? ' — ' + s.conditionalRun.rule.replace(/<b>/g, '**').replace(/<\/b>/g, '**') : '') + '\n';
+  }
+
+  // Tool Calls
+  if (s.tools && s.tools.length) {
+    md += '\n### Tool Calls\n\n';
+    s.tools.forEach(function(t) { md += '- `' + t + '`\n'; });
+  }
+
+  // Data In (grouped by source)
+  if (s.inputs && s.inputs.length) {
+    md += '\n### Data In\n';
+    var groups = {};
+    s.inputs.forEach(function(name) {
+      var base = name.split('.')[0];
+      var src = INPUT_SOURCES[name] || INPUT_SOURCES[base] || null;
+      if (!groups[src]) groups[src] = [];
+      groups[src].push(name);
+    });
+    var order = [null].concat(STEPS.map(function(x) { return x.id; }));
+    var sortedKeys = Object.keys(groups).sort(function(a, b) {
+      return order.indexOf(a === 'null' ? null : a) - order.indexOf(b === 'null' ? null : b);
+    });
+    sortedKeys.forEach(function(src) {
+      var label = getSourceLabel(src === 'null' ? null : src);
+      md += '\n**From ' + label + ':**\n';
+      groups[src].forEach(function(n) { md += '- `' + n + '`\n'; });
+    });
+  }
+
+  // Data Out
+  if (s.outputs && s.outputs.length) {
+    md += '\n### Data Out\n\n';
+    s.outputs.forEach(function(d) {
+      var schema = s.outputSchema ? s.outputSchema[d] : null;
+      if (schema) {
+        md += '- `' + d + '`: ' + schema + '\n';
+      } else {
+        md += '- `' + d + '`\n';
+      }
+    });
+  }
+
+  // Feeds Into
+  var outbound = getOutboundEdges(s.id);
+  var loops = VALIDATION_LOOPS.filter(function(l) { return l.from === s.id || l.to === s.id; });
+  if (outbound.length || loops.length) {
+    md += '\n### Feeds Into\n\n';
+    loops.forEach(function(loop) {
+      var otherId = loop.from === s.id ? loop.to : loop.from;
+      var other = STEPS.find(function(x) { return x.id === otherId; });
+      if (!other) return;
+      md += '**\u21c4 Validation loop** with Step ' + other.num + ': ' + other.name + '\n';
+      md += loop.label.replace(/<b>/g, '**').replace(/<\/b>/g, '**') + '\n\n';
+    });
+    outbound.forEach(function(edge) {
+      var target = STEPS.find(function(x) { return x.id === edge.target; });
+      if (!target) return;
+      md += '**\u2192 Step ' + target.num + ': ' + target.name + ':** ' + edge.variables.join(', ') + '\n';
+    });
+  }
+
+  // Detail / Prompt sections (text blocks wrapped in ```)
+  var pt = primaryType(s);
+  var isHybrid = getTypes(s).length > 1;
+
+  if (isHybrid && s.detail) {
+    var detailLabel = pt === 'tool' ? 'Tool Logic' : pt === 'validate' ? 'Validation Logic' : pt === 'logic' ? 'Logic' : pt === 'sqlite' ? 'DB Operations' : 'Detail';
+    md += '\n### ' + detailLabel + '\n\n```\n' + s.detail + '\n```\n';
+  }
+  if (hasType(s, 'llm') && s.prompt) {
+    var prompt = state.editedPrompts[s.id] || s.prompt;
+    md += '\n### LLM Prompt\n\n```\n' + prompt + '\n```\n';
+  }
+  if (!hasType(s, 'llm') && s.prompt) {
+    md += '\n### Prompt\n\n```\n' + s.prompt + '\n```\n';
+  }
+  if (!isHybrid && s.detail) {
+    var dLabel = pt === 'template' ? 'Template' : pt === 'validate' ? 'Validation' : pt === 'llm' ? 'Detail' : pt === 'sqlite' ? 'DB Operations' : 'Logic';
+    md += '\n### ' + dLabel + '\n\n```\n' + s.detail + '\n```\n';
+  }
+
+  // Quality Rules
+  if (s.qualityRules && s.qualityRules.length) {
+    md += '\n### Quality Rules\n\n';
+    s.qualityRules.forEach(function(r) { md += '- ' + r + '\n'; });
+  }
+
+  // Edge Cases
+  if (s.edgeCases && s.edgeCases.length) {
+    md += '\n### Errors & Fallbacks\n\n';
+    s.edgeCases.forEach(function(ec) {
+      var sev = (ec.severity || 'degrade').toUpperCase();
+      md += '- **' + sev + '** — ' + ec.label + ': ' + ec.action + '\n';
+    });
+  }
+
+  return md;
+}
+
+function updatePrompt() {
+  var el = document.getElementById('promptOutput');
+  if (!state.selectedStep) { el.textContent = 'Select a step to see its full markdown spec.'; return; }
+  var s = STEPS.find(function(x) { return x.id === state.selectedStep; });
+  if (!s) return;
+  el.textContent = generateStepMarkdown(s);
+}
+
+function copyPrompt() {
+  var text = document.getElementById('promptOutput').textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    var btn = document.getElementById('copyBtn');
+    btn.textContent = 'Copied!'; btn.classList.add('copied');
+    setTimeout(function() { btn.textContent = 'Copy Markdown'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
+function generateAllMarkdown() {
+  var md = '';
+  var today = new Date();
+  var dateStr = today.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  md += '# Intel Report Pipeline — Full Workflow Spec\n\n';
+  md += '> 19-step Datagen agent pipeline: webhook → discovery → intel → report → publish\n';
+  md += '> Generated: ' + dateStr + '\n\n';
+
+  // Table of Contents
+  md += '## Table of Contents\n\n';
+  var tocPhase = '';
+  STEPS.forEach(function(s) {
+    if (s.phase !== tocPhase) {
+      if (tocPhase) md += '\n';
+      md += '**Phase ' + PHASE_ROMAN[s.phase] + ': ' + PHASE_LABELS[s.phase] + '**\n';
+      tocPhase = s.phase;
+    }
+    md += '- Step ' + s.num + ': ' + s.name + ' (' + s.id + ')\n';
+  });
+  md += '\n';
+
+  var lastPhase = '';
+  STEPS.forEach(function(s, i) {
+    if (s.phase !== lastPhase) {
+      if (lastPhase) md += '\n---\n\n';
+      md += '# Phase ' + PHASE_ROMAN[s.phase] + ': ' + PHASE_LABELS[s.phase] + '\n\n';
+      lastPhase = s.phase;
+    } else if (i > 0) {
+      md += '\n---\n\n';
+    }
+    md += generateStepMarkdown(s);
+  });
+
+  return md;
+}
+
+function showAllMarkdown() {
+  var el = document.getElementById('mdModalContent');
+  el.textContent = generateAllMarkdown();
+  document.getElementById('mdModalOverlay').classList.add('visible');
+}
+
+function hideAllMarkdown() {
+  document.getElementById('mdModalOverlay').classList.remove('visible');
+}
+
+function copyAllMarkdown() {
+  var text = document.getElementById('mdModalContent').textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    var btn = document.getElementById('copyAllBtn');
+    btn.textContent = 'Copied!'; btn.classList.add('copied');
+    setTimeout(function() { btn.textContent = 'Copy Markdown'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
+function togglePromptBar() {
+  state.promptMinimized = !state.promptMinimized;
+  var bar = document.getElementById('promptOutputBar');
+  var btn = document.getElementById('minimizeBtn');
+  bar.classList.toggle('minimized', state.promptMinimized);
+  btn.innerHTML = state.promptMinimized ? '&#9652;' : '&#9662;';
+  btn.title = state.promptMinimized ? 'Expand' : 'Minimize';
+}
+
+// ═══════════════════════════════════════════════════════
+// SCROLL ZOOM
+// ═══════════════════════════════════════════════════════
+
+document.getElementById('diagramWrap').addEventListener('wheel', function(e) {
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    var delta = e.deltaY < 0 ? 0.05 : -0.05;
+    zoomDiagram(delta);
+  }
+}, { passive: false });
+
+// ═══════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════
+
+renderPipeline();
+updatePrompt();
+</script>
+</body>
+</html>

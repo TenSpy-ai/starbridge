@@ -1,0 +1,1681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Starbridge Intel Report — Workflow Explorer</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #21262d; --border: #30363d;
+    --text: #e6edf3; --text-dim: #8b949e; --text-bright: #f0f6fc;
+    --blue: #58a6ff; --green: #3fb950; --orange: #d29922; --purple: #bc8cff;
+    --red: #f85149; --cyan: #39d2c0; --pink: #f778ba;
+    --tool: #1a3a2a; --tool-border: #238636;
+    --llm: #2a1a3a; --llm-border: #8b5cf6;
+    --template: #1a2a3a; --template-border: #58a6ff;
+    --logic: #2a2a1a; --logic-border: #d29922;
+    --validate: #2a1a1a; --validate-border: #f85149;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+
+  .app { display: grid; grid-template-columns: 340px 1fr; grid-template-rows: auto 1fr auto; height: 100vh; }
+  .app.diagram-mode { grid-template-columns: 1fr; }
+  .app.diagram-mode .pipeline { display: none; }
+  .app.diagram-mode .detail { display: none; }
+  .app.diagram-mode .diagram-wrap { display: block; }
+
+  /* View toggle buttons */
+  .view-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 12px; font-size: 11px; cursor: pointer; transition: all 0.15s; }
+  .view-btn:first-of-type { border-radius: 6px 0 0 6px; }
+  .view-btn:last-of-type { border-radius: 0 6px 6px 0; margin-left: -1px; }
+  .view-btn.active { border-color: var(--blue); color: var(--blue); background: rgba(88,166,255,0.1); z-index: 1; position: relative; }
+  .view-btn:hover:not(.active) { border-color: var(--blue); color: var(--text); }
+
+  /* Diagram view */
+  .diagram-wrap { display: none; position: relative; overflow: auto; background: var(--bg); grid-column: 1 / -1; grid-row: 2; }
+  .diagram-canvas { transform-origin: 0 0; transition: transform 0.15s ease; }
+  .diagram-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; }
+
+  .diagram-nodes { position: absolute; top: 0; left: 0; z-index: 2; }
+
+  .dnode { position: absolute; width: 190px; padding: 12px 14px; border-radius: 10px; border: 2px solid var(--border); background: var(--surface); cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; user-select: none; }
+  .dnode:hover { border-color: var(--blue); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+  .dnode.dnode-selected { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,0.25), 0 0 20px rgba(88,166,255,0.3), 0 0 40px rgba(88,166,255,0.1); }
+  .dnode.dnode-dimmed { opacity: 0.15; pointer-events: none; }
+  .dnode-num { font-size: 9px; font-weight: 700; color: var(--text-dim); margin-bottom: 3px; display: flex; align-items: center; gap: 5px; }
+  .dnode-name { font-size: 12px; font-weight: 600; color: var(--text-bright); line-height: 1.3; }
+  .dnode-meta { font-size: 10px; color: var(--text-dim); margin-top: 4px; line-height: 1.3; }
+  .dnode .step-badge { font-size: 8px; padding: 0px 5px; }
+
+  .dnode-tool { border-color: var(--tool-border); }
+  .dnode-tool:hover { border-color: var(--green); }
+  .dnode-llm { border-color: var(--llm-border); }
+  .dnode-llm:hover { border-color: var(--purple); }
+  .dnode-template { border-color: var(--template-border); }
+  .dnode-template:hover { border-color: var(--blue); }
+  .dnode-logic { border-color: var(--logic-border); }
+  .dnode-logic:hover { border-color: var(--orange); }
+  .dnode-validate { border-color: var(--validate-border); }
+  .dnode-validate:hover { border-color: var(--red); }
+  .dnode-source { border-color: var(--cyan); }
+  .dnode-source:hover { border-color: var(--cyan); }
+
+  .dgroup-parallel { position: absolute; border: 2px dashed var(--cyan); border-radius: 14px; pointer-events: none; z-index: 0; }
+  .dgroup-parallel-label { position: absolute; top: -10px; left: 20px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--cyan); background: var(--bg); padding: 0 8px; }
+  .dgroup-sequential { position: absolute; border: 2px dotted var(--orange); border-radius: 10px; pointer-events: none; z-index: 0; }
+  .dgroup-sequential-label { position: absolute; top: -10px; right: 20px; font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--orange); background: var(--bg); padding: 0 8px; }
+
+  /* Zoom controls */
+  .zoom-controls { display: none; position: fixed; top: 70px; left: 20px; z-index: 150; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 4px; gap: 2px; align-items: center; box-shadow: 0 4px 16px rgba(0,0,0,0.4); }
+  .zoom-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); width: 30px; height: 28px; border-radius: 4px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: all 0.1s; }
+  .zoom-btn:hover { border-color: var(--blue); color: var(--blue); }
+  .zoom-level { font-size: 11px; color: var(--text-dim); padding: 0 8px; min-width: 44px; text-align: center; }
+
+  /* Floating detail panel in diagram mode */
+  .diagram-detail-float { display: none; position: fixed; top: 80px; right: 24px; width: 440px; max-height: calc(100vh - 200px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; z-index: 100; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+  .diagram-detail-float.visible { display: block; }
+  .diagram-detail-float .detail-close { position: absolute; top: 10px; right: 14px; background: none; border: none; color: var(--text-dim); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
+  .diagram-detail-float .detail-close:hover { background: var(--surface2); color: var(--text); }
+
+  /* Header */
+  .header { grid-column: 1/-1; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .header h1 { font-size: 15px; font-weight: 600; color: var(--text-bright); white-space: nowrap; }
+  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .controls label { font-size: 12px; color: var(--text-dim); }
+  .preset-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); padding: 4px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; transition: all 0.15s; }
+  .preset-btn:hover { border-color: var(--blue); color: var(--text); }
+  .preset-btn.active { border-color: var(--blue); color: var(--blue); background: rgba(88,166,255,0.1); }
+
+  /* Pipeline (left panel) */
+  .pipeline { overflow-y: auto; padding: 16px; border-right: 1px solid var(--border); background: var(--bg); }
+  .phase-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-dim); margin: 16px 0 8px 4px; }
+  .phase-label:first-child { margin-top: 0; }
+
+  .step { padding: 10px 12px; border-radius: 8px; margin-bottom: 4px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; position: relative; }
+  .step:hover { background: var(--surface); }
+  .step.selected { border-color: var(--blue); background: var(--surface); }
+  .step.dimmed { opacity: 0.3; pointer-events: none; }
+  .step-num { font-size: 10px; font-weight: 700; color: var(--text-dim); margin-bottom: 2px; display: flex; align-items: center; gap: 6px; }
+  .step-name { font-size: 13px; font-weight: 500; }
+  .step-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+  .step-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .badge-tool { background: var(--tool); color: var(--green); border: 1px solid var(--tool-border); }
+  .badge-llm { background: var(--llm); color: var(--purple); border: 1px solid var(--llm-border); }
+  .badge-template { background: var(--template); color: var(--blue); border: 1px solid var(--template-border); }
+  .badge-logic { background: var(--logic); color: var(--orange); border: 1px solid var(--logic-border); }
+  .badge-validate { background: var(--validate); color: var(--red); border: 1px solid var(--validate-border); }
+  .badge-source { background: #1a2a2a; color: var(--cyan); border: 1px solid var(--cyan); }
+
+  .connector { width: 2px; height: 8px; background: var(--border); margin: 0 0 0 20px; }
+  .parallel-group { border-left: 2px solid var(--cyan); margin-left: 20px; padding-left: 12px; position: relative; }
+  .parallel-group::before { content: 'PARALLEL'; position: absolute; top: -8px; left: 8px; font-size: 9px; color: var(--cyan); font-weight: 700; letter-spacing: 1px; }
+
+
+  /* Detail panel (right) */
+  .detail { overflow-y: auto; padding: 24px 28px; background: var(--surface); }
+  .detail-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-dim); font-size: 14px; }
+  .detail h2 { font-size: 18px; font-weight: 600; color: var(--text-bright); margin-bottom: 4px; }
+  .detail .subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+
+  .detail-section { margin-bottom: 24px; }
+  .detail-section h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .detail-section h3 .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+  .data-flow { display: flex; flex-wrap: wrap; gap: 6px; }
+  .data-chip { padding: 3px 10px; border-radius: 12px; font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .chip-in { background: rgba(88,166,255,0.1); color: var(--blue); border: 1px solid rgba(88,166,255,0.3); }
+  .chip-out { background: rgba(63,185,80,0.1); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+  .chip-tool { background: rgba(57,210,192,0.1); color: var(--cyan); border: 1px solid rgba(57,210,192,0.3); }
+
+  /* Input source groups */
+  .input-group { margin-bottom: 10px; }
+  .input-group:last-child { margin-bottom: 0; }
+  .input-group-label { font-size: 10px; color: var(--text-dim); margin-bottom: 4px; padding-left: 2px; }
+  .input-group-label .src-link { color: var(--cyan); cursor: pointer; text-decoration: none; }
+  .input-group-label .src-link:hover { text-decoration: underline; }
+
+  .prompt-block { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; color: var(--text); position: relative; }
+  .prompt-block .editable { outline: none; min-height: 100px; }
+  .prompt-block .editable:focus { border-color: var(--blue); }
+
+  .output-block { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; color: var(--text-dim); max-height: 250px; overflow-y: auto; }
+
+  .arrow-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; color: var(--text-dim); }
+  .arrow-row .arrow { color: var(--text-dim); font-size: 14px; }
+  .arrow-row .target { color: var(--text); font-weight: 500; }
+
+  .quality-rule { padding: 6px 10px; background: rgba(248,81,73,0.08); border-left: 3px solid var(--red); border-radius: 0 6px 6px 0; margin-bottom: 6px; font-size: 12px; line-height: 1.5; }
+
+  /* Prompt output (bottom) */
+  .prompt-output { grid-column: 1/-1; border-top: 1px solid var(--border); background: var(--surface); padding: 12px 20px; display: flex; align-items: flex-start; gap: 12px; max-height: 180px; transition: all 0.2s; }
+  .prompt-output.minimized { max-height: 40px; padding: 10px 20px; overflow: hidden; }
+  .prompt-output.minimized .prompt-output-text { display: none; }
+  .prompt-output.minimized .copy-btn { display: none; }
+  .prompt-output-text { flex: 1; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: var(--text); line-height: 1.5; overflow-y: auto; max-height: 150px; white-space: pre-wrap; }
+  .copy-btn { background: var(--blue); color: #fff; border: none; padding: 6px 16px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+  .copy-btn:hover { opacity: 0.85; }
+  .copy-btn.copied { background: var(--green); }
+  .minimize-btn { background: none; border: none; color: var(--text-dim); font-size: 16px; cursor: pointer; padding: 0 4px; line-height: 1; flex-shrink: 0; border-radius: 3px; }
+  .minimize-btn:hover { color: var(--text); background: var(--surface2); }
+
+  .edit-hint { font-size: 11px; color: var(--text-dim); font-style: italic; margin-bottom: 8px; }
+
+  /* Error & fallback indicators */
+  .edge-case { padding: 8px 12px; background: var(--bg); border-radius: 6px; margin-bottom: 4px; font-size: 12px; display: flex; gap: 8px; border-left: 3px solid var(--orange); }
+  .edge-case.ec-stop { border-left-color: var(--red); background: rgba(248,81,73,0.06); }
+  .edge-case.ec-degrade { border-left-color: var(--orange); }
+  .edge-case.ec-skip { border-left-color: var(--text-dim); }
+  .edge-case .ec-severity { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; align-self: flex-start; margin-top: 1px; }
+  .ec-stop .ec-severity { color: var(--red); background: rgba(248,81,73,0.15); }
+  .ec-degrade .ec-severity { color: var(--orange); background: rgba(210,153,34,0.15); }
+  .ec-skip .ec-severity { color: var(--text-dim); background: rgba(139,148,158,0.15); }
+  .edge-case .ec-label { color: var(--text); font-weight: 600; white-space: nowrap; }
+  .edge-case .ec-action { color: var(--text-dim); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="header">
+    <h1>Starbridge Intel Report Workflow</h1>
+    <div class="controls">
+      <button class="preset-btn" onclick="focusPhase('gather')">Data Gathering</button>
+      <button class="preset-btn" onclick="focusPhase('generate')">Generation</button>
+      <button class="preset-btn" onclick="focusPhase('all')">Full Pipeline</button>
+      <span style="width:1px;height:20px;background:var(--border);display:inline-block;margin:0 4px"></span>
+      <button class="view-btn active" id="viewList" onclick="setView('list')">List</button>
+      <button class="view-btn" id="viewDiagram" onclick="setView('diagram')">Diagram</button>
+    </div>
+  </div>
+
+  <div class="pipeline" id="pipeline"></div>
+  <div class="detail" id="detail"><div class="detail-empty">Click a step to see details</div></div>
+
+  <div class="diagram-wrap" id="diagramWrap">
+    <div class="diagram-canvas" id="diagramCanvas">
+      <svg class="diagram-svg" id="diagramSvg"></svg>
+      <div class="diagram-nodes" id="diagramNodes"></div>
+    </div>
+    <div class="diagram-detail-float" id="diagramDetail"></div>
+  </div>
+
+  <div class="prompt-output" id="promptOutputBar">
+    <button class="minimize-btn" id="minimizeBtn" onclick="togglePromptBar()" title="Minimize">&#9662;</button>
+    <div class="prompt-output-text" id="promptOutput">Select a step to see its prompt, data flow, and output format.</div>
+    <button class="copy-btn" id="copyBtn" onclick="copyPrompt()">Copy Prompt</button>
+  </div>
+
+  <div class="zoom-controls" id="zoomControls">
+    <button class="zoom-btn" onclick="zoomDiagram(-0.1)" title="Zoom out">&#8722;</button>
+    <span class="zoom-level" id="zoomLevel">100%</span>
+    <button class="zoom-btn" onclick="zoomDiagram(0.1)" title="Zoom in">+</button>
+    <button class="zoom-btn" onclick="zoomDiagram(0)" title="Fit to view" style="font-size:12px">Fit</button>
+  </div>
+
+</div>
+
+<script>
+const state = { selectedStep: null, focusPhase: 'all', editedPrompts: {}, view: 'list', zoom: 1, promptMinimized: false };
+
+const STEPS = [
+  // ─── Phase: Source ───
+  { id: 's0', phase: 'source', num: '0', name: 'Clay Webhook', type: 'source',    meta: 'Incoming payload from Clay — triggered by positive reply in Smartlead',
+    inputs: [],
+    outputs: ['buyer_name','buyer_domain','prospect_product','product_description','campaign_signal','prospect_name','prospect_email'],
+    tools: [],
+    prompt: null,
+    detail: `Incoming webhook payload from Clay, triggered when Smartlead
+detects a positive reply from a prospect.
+
+PAYLOAD FIELDS:
+  buyer_name          — "California Community Colleges"
+  buyer_domain        — "cccco.edu" (from reply email domain)
+  prospect_product    — "VMock" (the vendor's product)
+  product_description — "AI-powered career services platform..."
+  campaign_signal     — "Board discussion: workforce development..."
+  prospect_name       — "Jane Smith" (who replied)
+  prospect_email      — "jsmith@company.com"
+
+SOURCE CHAIN:
+  Prospect replies → Smartlead detects positive reply →
+  Smartlead fires webhook to Clay →
+  Clay routes payload to Datagen agent`,
+    outputFormat: '{\n  "buyer_name": "California Community Colleges",\n  "buyer_domain": "cccco.edu",\n  "prospect_product": "VMock",\n  "product_description": "AI-powered career services...",\n  "campaign_signal": "Board discussion: workforce development...",\n  "prospect_name": "Jane Smith",\n  "prospect_email": "jsmith@company.com"\n}',
+    edges: [{ target: 's1', label: 'all fields → validation' }, { target: 's2', label: 'buyer_name + buyer_domain' }, { target: 's5', label: 'prospect_product → Header' }, { target: 's7', label: 'prospect_product + campaign_signal → Relevancy' }, { target: 's8', label: 'prospect_product → Gameplan' }, { target: 's9', label: 'prospect_product → Contacts Table' }, { target: 's10', label: 'prospect_product + campaign_signal → Signals' }],
+    edgeCases: [
+      { label: 'Missing fields', action: 'Step 1 validates and sets defaults', severity: 'degrade' },
+      { label: 'Malformed payload', action: 'Step 1 returns error — pipeline stops', severity: 'stop' }
+    ]
+  },
+
+  // ─── Phase: Input ───
+  { id: 's1', phase: 'input', num: '1', name: 'Validate Inputs', type: 'validate',    meta: 'Check required fields, set defaults',
+    inputs: ['buyer_name','buyer_domain','prospect_product','product_description','campaign_signal'],
+    outputs: ['validated inputs'],
+    tools: [],
+    prompt: null,
+    detail: `Validate the Clay webhook payload before starting the pipeline.
+
+REQUIRED (stop if missing):
+  buyer_name OR buyer_domain — at least one must be present
+  prospect_product            — the vendor's product name
+
+OPTIONAL (improve report quality if present):
+  product_description  — what the product does
+  campaign_signal      — the outbound signal that triggered the reply
+  prospect_name        — who replied
+  prospect_email       — their email address
+
+VALIDATION LOGIC:
+  if (!buyer_name && !buyer_domain) → return error
+  if (!prospect_product)            → return error`,
+    outputFormat: 'On success: pass all validated fields to Step 2\nOn failure: {"error": "Missing required input: buyer_name or buyer_domain", "status": "failed"}',
+    edges: [{ target: 's2', label: 'validated inputs' }],
+    edgeCases: [
+      { label: 'buyer_name + buyer_domain both missing', action: 'Return error — cannot resolve buyer without either field', severity: 'stop' },
+      { label: 'prospect_product missing', action: 'Return error — cannot generate report without product name', severity: 'stop' },
+      { label: 'product_description missing', action: 'Continue — Relevancy Analysis will be less targeted', severity: 'degrade' }
+    ]
+  },
+
+  // ─── Phase: Resolve ───
+  { id: 's2', phase: 'resolve', num: '2', name: 'Resolve Buyer', type: ['tool','llm'],    meta: 'buyer_search → buyerId, or domain fallback. LLM disambiguation when ambiguous.',
+    inputs: ['validated inputs','buyer_name','buyer_domain','prospect_product','prospect_email','campaign_signal'],
+    outputs: ['BUYER_ID','BUYER_NAME','ALT_MATCHES'],
+    tools: ['starbridge_buyer_search','starbridge_opportunity_search'],
+    prompt: `You are resolving a buyer identity from search results. Multiple candidates were returned.
+
+SEARCH QUERY: {buyer_name}
+BUYER DOMAIN (from reply email): {buyer_domain}
+PROSPECT EMAIL: {prospect_email}
+PROSPECT PRODUCT: {prospect_product}
+CAMPAIGN SIGNAL: {campaign_signal}
+
+CANDIDATES:
+{buyer_search_results — JSON array with buyerId, name, stateCode, tags[], url}
+
+SCORE EACH CANDIDATE on these criteria (in priority order):
+
+1. Domain alignment (strongest signal):
+   Compare buyer_domain against each candidate's url field.
+   Exact domain match or subdomain match → strong preference.
+   Also compare prospect_email domain against candidate url.
+
+2. State/region alignment:
+   If campaign_signal mentions a state, region, or locality,
+   prefer candidates whose stateCode matches.
+
+3. Buyer type plausibility:
+   Cross-reference prospect_product against each candidate's tags[].
+   A K-12 EdTech product → prefer SchoolDistrict over County.
+   A workforce platform → prefer HigherEducation or StateAgency.
+   A city infrastructure tool → prefer City over SchoolDistrict.
+
+4. Name specificity:
+   Prefer exact name matches over partial/substring matches.
+   "California Community Colleges" → match the system office, not an individual college.
+
+SELECT the candidate with the best composite match.
+Return its buyerId as BUYER_ID and name as BUYER_NAME.
+Return all other candidates as ALT_MATCHES for QA review.`,
+    detail: `Resolve the buyer name/domain into a Starbridge buyer ID.
+
+PATH A — buyer_name available:
+  Tool: starbridge_buyer_search
+  Params: query = {buyer_name}, page_size = 5
+
+  If 1 result → use it directly. No LLM needed.
+  If multiple results → invoke LLM DISAMBIGUATION (see prompt).
+  If 0 results → fall through to Path B.
+
+PATH B — domain only, OR Path A returned 0 results:
+  Tool: starbridge_opportunity_search
+  Params: search_query = {buyer_domain}, types = ["Meeting"], page_size = 5
+
+  Read from response:
+    opportunities[0].buyerId   → BUYER_ID
+    opportunities[0].buyerName → BUYER_NAME
+
+LLM DISAMBIGUATION (automated — triggered when buyer_search returns 2+ results):
+  The agent invokes an LLM call that scores each candidate against
+  webhook context: domain alignment, state/region match, buyer type
+  plausibility for the product, and name specificity.
+
+  This is NOT a manual review step — the agent reasons over the
+  candidates automatically and picks the best composite match.
+  The remaining candidates are stored in ALT_MATCHES for downstream
+  QA review (surfaced in Step 14's response metadata).
+
+STOP CONDITION:
+  Both paths return 0 results → return error, do not generate report.`,
+    outputFormat: 'BUYER_ID    = "bf7105f9-..."\nBUYER_NAME  = "Riverhead Central School District"\nALT_MATCHES = [{id, name}, ...]',
+    edges: [{ target: 's3a', label: 'BUYER_ID' }, { target: 's3b', label: 'BUYER_ID' }, { target: 's3c', label: 'BUYER_ID + BUYER_NAME' }, { target: 's3d', label: 'BUYER_ID + BUYER_NAME' }, { target: 's5', label: 'BUYER_NAME → Header' }, { target: 's7', label: 'BUYER_NAME → Relevancy' }, { target: 's8', label: 'BUYER_NAME → Gameplan' }, { target: 's10', label: 'BUYER_NAME → Signals' }, { target: 's14', label: 'BUYER_ID + BUYER_NAME + ALT_MATCHES' }],
+    edgeCases: [
+      { label: '0 results from buyer_search', action: 'Fall through to Path B (domain lookup via opportunity_search)', severity: 'degrade' },
+      { label: 'Both paths return 0 results', action: 'Return error — cannot generate report without a buyer ID', severity: 'stop' },
+      { label: 'Multiple matches (ambiguous)', action: 'Run disambiguation: score candidates by domain alignment, state/region match, buyer type plausibility, and name specificity. Pick best composite match. Store alternatives in ALT_MATCHES for QA.', severity: 'degrade' }
+    ]
+  },
+
+  // ─── Phase: Gather (parallel) ───
+  { id: 's3a', phase: 'gather', num: '3A', name: 'Fetch Buyer Profile', type: 'tool',parallel: true,
+    meta: 'starbridge_buyer_profile → firmographics, budget, procurement score',
+    inputs: ['BUYER_ID'],
+    outputs: ['PROFILE'],
+    tools: ['starbridge_buyer_profile'],
+    prompt: null,
+    detail: `Fetch the full buyer profile from Starbridge.
+
+Tool: starbridge_buyer_profile
+Params: buyer_id = {BUYER_ID}
+
+KEY FIELDS EXTRACTED:
+  Identity:
+    profile.name                    — confirmed buyer name
+    profile.tags[]                  — buyer type (HigherEducation, SchoolDistrict, City, etc.)
+    profile.stateCode               — state abbreviation
+    profile.url                     — website
+
+  Location:
+    profile.metadata.address.city   — city
+    profile.metadata.address.phone  — phone number
+
+  Firmographics (in profile.extraData):
+    procurementHellScore            — 0-100, higher = harder to procure
+    fiscalYearStartDate             — e.g. "July 1"
+    parentName                      — parent org name
+    enrollment / population         — size metric (varies by type)
+    schoolDistrictTotalStudents     — K-12 enrollment
+    budgetAmount / budgetLatestYear — annual budget
+
+USED BY: Step 4 (type mapping), Step 6 (Buyer Snapshot), Step 7 (Relevancy), Step 8 (Gameplan)`,
+    outputFormat: 'PROFILE = {\n  profile: {\n    name, tags, stateCode, url,\n    metadata: { address: { city, phone } },\n    extraData: { procurementHellScore, fiscalYearStartDate, enrollment, budgetAmount, ... }\n  }\n}',
+    edges: [{ target: 's4', label: 'PROFILE → type mapping' }, { target: 's6', label: 'PROFILE → Buyer Snapshot' }, { target: 's7', label: 'PROFILE.extraData → Relevancy' }, { target: 's8', label: 'PROFILE → Gameplan' }, { target: 's13', label: 'PROFILE → validation' }],
+    edgeCases: [{ label: 'API error / timeout', action: 'Set PROFILE = null. Buyer Snapshot shows name only. Type mapping uses defaults. Gameplan loses budget/procurement data.', severity: 'degrade' }]
+  },
+  { id: 's3b', phase: 'gather', num: '3B', name: 'Fetch Contacts', type: 'tool',parallel: true,
+    meta: 'starbridge_buyer_contacts → decision makers, emails, titles',
+    inputs: ['BUYER_ID'],
+    outputs: ['CONTACTS'],
+    tools: ['starbridge_buyer_contacts'],
+    prompt: null,
+    detail: `Fetch all known contacts for this buyer.
+
+Tool: starbridge_buyer_contacts
+Params: buyer_id = {BUYER_ID}, page_size = 100
+
+KEY FIELDS PER CONTACT:
+  contactId           — unique ID
+  name                — full name
+  title               — original job title (preserve exactly for SLED)
+  normalizedTitles[]  — standardized role tags for product matching
+  email               — email address (may be null)
+  phone               — phone number (may be null)
+  emailVerified       — boolean, CRITICAL for DM selection
+  worksAtBuyer        — boolean, filter out former employees
+  linkedInUrl         — LinkedIn profile
+  source              — "WebAgent", "Manual", or "FOIA"
+
+USED BY: Step 8 (Gameplan DM selection), Step 9 (Contacts Table)`,
+    outputFormat: 'CONTACTS = {\n  totalContacts: 45,\n  contacts: [{ contactId, name, title, normalizedTitles, email, emailVerified, phone, worksAtBuyer, ... }]\n}',
+    edges: [{ target: 's8', label: 'CONTACTS → Gameplan DM selection' }, { target: 's9', label: 'CONTACTS → Contacts Table' }, { target: 's13', label: 'CONTACTS → validation' }],
+    edgeCases: [
+      { label: 'API error / timeout', action: 'Set CONTACTS = null. Gameplan DM selection and Contacts Table are both skipped.', severity: 'degrade' },
+      { label: '0 contacts returned (call succeeds)', action: 'Same as null — skip Contacts Table, add "No contacts available" note.', severity: 'skip' }
+    ]
+  },
+  { id: 's3c', phase: 'gather', num: '3C', name: 'Fetch Opportunities', type: 'tool',parallel: true,
+    meta: 'starbridge_opportunity_search → meetings, RFPs, purchases, contracts',
+    inputs: ['BUYER_ID','BUYER_NAME'],
+    outputs: ['OPPORTUNITIES'],
+    tools: ['starbridge_opportunity_search'],
+    prompt: null,
+    detail: `Fetch recent procurement activity and board records for this buyer.
+
+Tool: starbridge_opportunity_search
+Params:
+  search_query = {BUYER_NAME}
+  types        = ["Meeting", "Purchase", "RFP", "Contract"]
+  buyer_ids    = [{BUYER_ID}]
+  page_size    = 40
+  sort_field   = "SearchRelevancy"
+
+KEY FIELDS PER OPPORTUNITY:
+  title            — opportunity name
+  summary          — text content (board minutes, RFP description, etc.)
+  type             — Meeting, RFP, Purchase, or Contract
+  postedDate       — when it was posted/occurred
+  dueDate          — RFP deadline (if applicable)
+  untilDate        — contract expiration (if applicable)
+  purchaseAmount   — dollar value
+  rfps[]           — linked RFP documents (v9.6)
+  purchaseOrders[] — linked POs (v9.6)
+
+USED BY: Step 7 (Relevancy Analysis), Step 10 (Strategic Signals)`,
+    outputFormat: 'OPPORTUNITIES = {\n  totalItems: 23,\n  opportunities: [{ title, summary, type, postedDate, purchaseAmount, dueDate, untilDate, rfps, purchaseOrders, ... }]\n}',
+    edges: [{ target: 's7', label: 'OPPORTUNITIES → Relevancy Analysis' }, { target: 's10', label: 'OPPORTUNITIES → Strategic Signals' }, { target: 's13', label: 'OPPORTUNITIES → validation' }],
+    edgeCases: [
+      { label: 'API error / timeout', action: 'Set OPPORTUNITIES = null. Strategic Signals relies on AI_CONTEXT only.', severity: 'degrade' },
+      { label: '0 opportunities returned', action: 'Same as null — Signals section uses AI chat narrative to extract signals.', severity: 'degrade' }
+    ]
+  },
+  { id: 's3d', phase: 'gather', num: '3D', name: 'AI Chat (Strategic Context)', type: 'tool',parallel: true,
+    meta: 'starbridge_buyer_chat → strategic priorities, initiatives, leadership',
+    inputs: ['BUYER_ID','BUYER_NAME'],
+    outputs: ['AI_CONTEXT'],
+    tools: ['starbridge_buyer_chat'],
+    prompt: null,
+    detail: `Ask Starbridge's AI about this buyer's strategic context.
+
+Tool: starbridge_buyer_chat
+Params:
+  buyer_id = {BUYER_ID}
+  question = (see below)
+
+QUESTION SENT TO STARBRIDGE AI:
+────────────────────────────────────────────────────
+"What are {BUYER_NAME}'s key strategic priorities,
+recent technology initiatives, major procurement
+activity, and any leadership changes in the past
+12 months? Include specific initiative names,
+dollar amounts, and dates where available."
+────────────────────────────────────────────────────
+
+PERFORMANCE:
+  Slowest call in the pipeline: 10-30 seconds (SSE streaming)
+  Costs Starbridge credits per query
+  Returns markdown-formatted response (500-3000 chars)
+
+The Starbridge AI has access to 107M+ indexed board meetings,
+contracts, budgets, and strategic plans for this buyer.
+
+USED BY: Step 7 (Relevancy), Step 8 (Gameplan), Step 10 (Strategic Signals)`,
+    outputFormat: 'AI_CONTEXT = "## Strategic Priorities\\n\\nCCC\'s Vision 2030 framework prioritizes workforce development...\\n\\n## Recent Technology Initiatives\\n..."',
+    edges: [{ target: 's7', label: 'AI_CONTEXT → Relevancy Analysis' }, { target: 's8', label: 'AI_CONTEXT → Gameplan' }, { target: 's10', label: 'AI_CONTEXT → Strategic Signals' }, { target: 's11', label: 'AI_CONTEXT availability → Footer' }, { target: 's13', label: 'AI_CONTEXT → validation' }],
+    edgeCases: [
+      { label: 'Timeout (30s) or API error', action: 'Set AI_CONTEXT = null. Relevancy + Gameplan rely on opportunity data only. Footer notes "AI analysis unavailable."', severity: 'degrade' },
+      { label: 'Starbridge credits exhausted', action: 'Same as timeout — AI chat silently fails. Continue with other data sources.', severity: 'degrade' }
+    ]
+  },
+
+  // ─── Phase: Map ───
+  { id: 's4', phase: 'map', num: '4', name: 'Map Buyer Type + Size', type: 'logic',    meta: 'Derive emoji, label, enrollment/population from profile tags',
+    inputs: ['PROFILE'],
+    outputs: ['TYPE_EMOJI','TYPE_LABEL','SIZE_LABEL','SIZE_VALUE'],
+    tools: [],
+    prompt: null,
+    detail: `Deterministic mapping — read PROFILE.profile.tags[] and extraData.
+
+BUYER TYPE → EMOJI + LABEL:
+  HigherEducation  →  🏛️  "Higher Education"
+  SchoolDistrict   →  🏫  "School District"
+  School           →  🏫  "School"
+  StateAgency      →  🏛️  "State Agency"
+  City             →  🏙️  "City"
+  County           →  🏢  "County"
+  (other)          →  🏛️  tags[0]
+
+SIZE METRIC → LABEL + VALUE:
+  HigherEducation  →  "Enrollment"   from extraData.enrollment
+  SchoolDistrict   →  "Enrollment"   from extraData.schoolDistrictTotalStudents
+  City / County    →  "Population"   from extraData.population
+  StateAgency      →  "Employees"    if available, else omit
+
+FORMATTING:
+  Numbers with commas: 2108927 → "2,108,927"
+  Append unit: "students" or "residents"`,
+    outputFormat: 'TYPE_EMOJI  = "🏛️"\nTYPE_LABEL  = "Higher Education"\nSIZE_LABEL  = "Enrollment"\nSIZE_VALUE  = "2,108,927 students"',
+    edges: [{ target: 's6', label: 'type + size → Buyer Snapshot' }, { target: 's7', label: 'TYPE_LABEL → Relevancy' }, { target: 's8', label: 'TYPE_LABEL → Gameplan' }],
+    edgeCases: [
+      { label: 'PROFILE null', action: 'Use BUYER_NAME only. Set generic emoji 🏛️. Omit size metric.', severity: 'degrade' },
+      { label: 'ALL 4 gather calls failed', action: 'PROFILE, CONTACTS, OPPORTUNITIES, and AI_CONTEXT are all null — return error. Cannot generate report with no data.', severity: 'stop' }
+    ]
+  },
+
+  // ─── Phase: Generate ───
+  { id: 's5', phase: 'generate', num: '5', name: 'Section 1: Header', type: 'template',parallel: true,
+    meta: 'Simple template fill — no LLM needed',
+    inputs: ['BUYER_NAME','prospect_product'],
+    outputs: ['SECTION_HEADER'],
+    tools: [],
+    prompt: null,
+    detail: `String interpolation — no LLM call.
+
+TEMPLATE:
+  # 📊 {BUYER_NAME} — Intelligence Report for {prospect_product}
+
+VARIABLES:
+  {BUYER_NAME}       ← BUYER_NAME from Step 2 (the resolved name, not the search query)
+  {prospect_product} ← prospect_product from Clay webhook
+
+This is the first line of the final Notion page.`,
+    outputFormat: '# 📊 California Community Colleges — Intelligence Report for VMock',
+    edges: [{ target: 's12', label: 'SECTION_HEADER → assembly' }],
+    edgeCases: []
+  },
+  { id: 's6', phase: 'generate', num: '6', name: 'Section 2: Buyer Snapshot', type: 'template',parallel: true,
+    meta: 'Structured callout card from profile data + type mapping',
+    inputs: ['PROFILE','TYPE_EMOJI','TYPE_LABEL','SIZE_LABEL','SIZE_VALUE'],
+    outputs: ['SECTION_SNAPSHOT'],
+    tools: [],
+    prompt: null,
+    detail: `Template fill using PROFILE + type mapping. No LLM call.
+
+OUTPUT TEMPLATE:
+  > {TYPE_EMOJI}
+  >
+  > **{BUYER_NAME}** | {TYPE_LABEL}
+  >
+  > **State:** {state} | **City:** {city} | **{SIZE_LABEL}:** {SIZE_VALUE}
+  >
+  > **Procurement Score:** {score}/100 | **Fiscal Year Start:** {fy_start}
+  >
+  > **Website:** [{url_display}]({url}) | **Phone:** {phone}
+  >
+  > **Parent Org:** {parent_name}
+
+FIELD MAPPING:
+  TYPE_EMOJI  ← Step 4       TYPE_LABEL  ← Step 4
+  BUYER_NAME  ← Step 2       state       ← PROFILE.profile.stateCode
+  city        ← PROFILE.profile.metadata.address.city
+  SIZE_LABEL  ← Step 4       SIZE_VALUE  ← Step 4
+  score       ← PROFILE.profile.extraData.procurementHellScore
+  fy_start    ← PROFILE.profile.extraData.fiscalYearStartDate
+  url         ← PROFILE.profile.url
+  phone       ← PROFILE.profile.metadata.address.phone
+  parent_name ← PROFILE.profile.extraData.parentName
+
+RULES:
+  • Omit any line where the value is null or missing
+  • Strip "http://" and "https://" from website display text
+  • Format numbers with commas`,
+    outputFormat: '> 🏛️\n>\n> **California Community Colleges (CCC)** | Higher Education System\n>\n> **State:** California | **City:** Sacramento | **Enrollment:** 2,108,927 students\n>\n> **Procurement Score:** 58/100 | **Fiscal Year Start:** July 1\n>\n> **Website:** [cccco.edu](http://cccco.edu) | **Phone:** (916) 445-8752\n>\n> **Parent Org:** State of California',
+    edges: [{ target: 's12', label: 'SECTION_SNAPSHOT → assembly' }],
+    edgeCases: [{ label: 'PROFILE null', action: 'Show minimal snapshot with BUYER_NAME only — no firmographics, no procurement score, no website.', severity: 'degrade' }]
+  },
+  { id: 's7', phase: 'generate', num: '7', name: 'Section 3: Relevancy Analysis', type: 'llm', parallel: true,
+    meta: 'LLM: use case archetype + 3 evidence bullets connecting signals to product',
+    inputs: ['prospect_product','product_description','campaign_signal','BUYER_NAME','TYPE_LABEL','AI_CONTEXT','OPPORTUNITIES','PROFILE.extraData'],
+    outputs: ['SECTION_RELEVANCY','RELEVANCY_BULLETS'],
+    tools: [],
+    prompt: `You are a SLED procurement intelligence analyst writing the Relevancy Analysis for an intel report.
+
+PROSPECT PRODUCT: {prospect_product}
+PRODUCT DESCRIPTION: {product_description}
+CAMPAIGN SIGNAL (what triggered the reply): {campaign_signal}
+
+BUYER: {BUYER_NAME}
+BUYER TYPE: {TYPE_LABEL}
+
+STRATEGIC CONTEXT FROM AI CHAT:
+{AI_CONTEXT}
+
+OPPORTUNITIES (meetings, purchases, RFPs, contracts):
+{OPPORTUNITIES — as JSON, summaries truncated to 300 chars}
+
+BUYER PROFILE EXTRA DATA:
+{PROFILE.extraData — as JSON}
+
+YOUR TASK:
+1. Identify a Use Case Archetype — 3-6 word label: "{Theme} — {Application}"
+   Examples: "Scale & Equity — Career Services Access", "Modernization Window — LMS Replacement Cycle"
+
+2. Write 1-2 sentence opening paragraph connecting buyer context to product.
+
+3. Write exactly 3 bullets. Each MUST:
+   - Reference a SPECIFIC signal, initiative, or data point
+   - Name the initiative, quote board language, or cite dollar amounts
+   - Explain WHY it creates an opening for {prospect_product}
+   - Be concrete enough for a BDR to reference on a phone call
+
+BAD: "They are investing in technology upgrades."
+GOOD: "The Board of Governors is prioritizing Career Technical Education (CTE) pathways with a Senior Advisor specifically focused on 'Workforce Development, Strategic Partnerships, and GenAI.'"
+
+OUTPUT FORMAT:
+
+## 🎯 Relevancy Analysis
+
+> 🔥
+>
+> **Use Case Archetype:** {archetype}
+
+{opening_paragraph}
+
+- {bullet_1}
+- {bullet_2}
+- {bullet_3}`,
+    detail: `LLM generation.
+
+PURPOSE: The core "why should we care" section. Synthesizes all gathered
+data into a focused argument for why this buyer is a fit for this product.
+
+DATA INJECTED INTO PROMPT:
+  prospect_product + product_description  ← Clay webhook
+  campaign_signal                         ← Clay webhook (what got the reply)
+  BUYER_NAME                              ← Step 2
+  TYPE_LABEL                              ← Step 4
+  AI_CONTEXT                              ← Step 3D (Starbridge AI analysis)
+  OPPORTUNITIES                           ← Step 3C (truncated summaries)
+  PROFILE.extraData                       ← Step 3A (scores, budget, enrollment)
+
+OUTPUTS:
+  SECTION_RELEVANCY  → goes to Step 12 (assembly)
+  RELEVANCY_BULLETS  → extracted from the 3 bullets, fed to Step 8 (Gameplan)
+
+SEQUENTIAL: This step must complete BEFORE Step 8 starts.`,
+    outputFormat: '## 🎯 Relevancy Analysis\n\n> 🔥\n>\n> **Use Case Archetype:** Scale & Equity — Career Services Access\n\nThe CCC system\'s Vision 2030 framework explicitly targets workforce development...\n\n- The Board of Governors is prioritizing CTE pathways...\n- The system is investing in a Common Cloud Data Platform...\n- The Chancellor\'s Office has identified decentralized systems create inequity...',
+    edges: [{ target: 's8', label: 'RELEVANCY_BULLETS → Gameplan' }, { target: 's12', label: 'SECTION_RELEVANCY → assembly' }],
+    edgeCases: [
+      { label: 'AI_CONTEXT null', action: 'Use OPPORTUNITIES + PROFILE only. Bullets may be less strategic.', severity: 'degrade' },
+      { label: 'OPPORTUNITIES null', action: 'Use AI_CONTEXT + PROFILE only.', severity: 'degrade' },
+      { label: 'Both AI_CONTEXT + OPPORTUNITIES null', action: 'Skip section entirely. Set SECTION_RELEVANCY = "".', severity: 'skip' }
+    ],
+    qualityRules: [
+      'Every bullet names a specific initiative, amount, or board action',
+      'Every bullet explains WHY it\'s relevant to this specific product',
+      'No bullet could apply generically to any buyer'
+    ]
+  },
+  { id: 's8', phase: 'generate', num: '8', name: 'Section 4: Gameplan', type: 'llm', parallel: true,
+    meta: 'LLM: primary DM + outreach script + procurement path',
+    inputs: ['prospect_product','product_description','BUYER_NAME','TYPE_LABEL','PROFILE.stateCode','CONTACTS','AI_CONTEXT','RELEVANCY_BULLETS','PROFILE.extraData'],
+    outputs: ['SECTION_GAMEPLAN','PRIMARY_DM_ID'],
+    tools: [],
+    prompt: `You are a SLED sales strategist writing the Gameplan for an intel report.
+
+PROSPECT PRODUCT: {prospect_product}
+PRODUCT DESCRIPTION: {product_description}
+
+BUYER: {BUYER_NAME} | TYPE: {TYPE_LABEL} | STATE: {stateCode}
+
+CONTACTS (titles, normalizedTitles, verification):
+{CONTACTS.contacts — as JSON}
+
+STRATEGIC CONTEXT: {AI_CONTEXT}
+
+KEY SIGNALS FROM RELEVANCY ANALYSIS:
+{RELEVANCY_BULLETS}
+
+BUYER PROFILE:
+- Procurement Score: {procurementHellScore}/100
+- Budget: {budgetAmount} ({budgetLatestYear})
+- Fiscal Year Start: {fiscalYearStartDate}
+
+GENERATE:
+
+1. PRIMARY DM TARGET — single best contact:
+   - Role overlaps with product use case (use normalizedTitles)
+   - Director+ seniority
+   - emailVerified == true (HARD REQUIREMENT)
+   - worksAtBuyer == true
+
+2. WHY THIS CONTACT — 1-2 sentences referencing role + a signal
+
+3. SECONDARY CONTACTS — 2-3 alternates with name, title, email
+
+4. OUTREACH SCRIPT — 2-3 sentences:
+   - OPEN with buyer's situation, not product
+   - Reference a specific initiative by name
+   - End with a question
+   - No jargon ("leverage", "synergy", "alignment")
+
+5. PROCUREMENT PATH:
+   - Recommended channel (co-op, sole source, RFP)
+   - Sole source threshold by state/entity type
+   - Key resellers (CDW-G, SHI, Carahsoft, Connection)
+   - Score interpretation (<30 low, 30-60 moderate, >60 high difficulty)`,
+    detail: `LLM generation.
+
+PURPOSE: The most actionable section — who to call, what to say, how to buy.
+
+SEQUENTIAL DEPENDENCY: Requires RELEVANCY_BULLETS from Step 7.
+Must wait for Step 7 to complete before starting.
+
+DATA INJECTED INTO PROMPT:
+  prospect_product + product_description  ← Clay webhook
+  BUYER_NAME, TYPE_LABEL, stateCode       ← Steps 2/4/3A
+  CONTACTS.contacts                       ← Step 3B (full list with normalizedTitles)
+  AI_CONTEXT                              ← Step 3D
+  RELEVANCY_BULLETS                       ← Step 7 (the 3 bullets)
+  procurementHellScore, budget, FY        ← Step 3A (PROFILE.extraData)
+
+OUTPUTS:
+  SECTION_GAMEPLAN  → goes to Step 12 (assembly)
+  PRIMARY_DM_ID     → contactId of selected DM, used by Step 9 for table ordering`,
+    outputFormat: '## 📋 Gameplan\n\n> 🎯\n>\n> **Primary DM Target:** Don Harjo Daves-Rougeaux — Sr. Advisor...\n>\n> **Email:** ddaves-rougeaux@cccco.edu\n\n**Why this contact:** His role spans workforce, partnerships, and GenAI...\n\n**Secondary contacts:**\n- **Anthony Cordova** — Vice Chancellor...\n\n#### Outreach Script\n"I saw CCC is standing up a common cloud data platform..."\n\n#### Procurement Path\n**Recommended:** Cooperative via CollegeBuys...',
+    edges: [{ target: 's9', label: 'PRIMARY_DM_ID → contacts table ordering' }, { target: 's12', label: 'SECTION_GAMEPLAN → assembly' }],
+    edgeCases: [
+      { label: 'CONTACTS null', action: 'Skip entire section. Cannot write Gameplan without contacts. Set SECTION_GAMEPLAN = "".', severity: 'skip' },
+      { label: 'No contacts with verified email', action: 'Pick best contact by other criteria, add "⚠️ Email unverified" warning to DM card.', severity: 'degrade' },
+      { label: 'RELEVANCY_BULLETS empty (Step 7 skipped)', action: 'Generate Gameplan without relevancy cross-references. Outreach script relies on AI_CONTEXT only.', severity: 'degrade' }
+    ],
+    qualityRules: [
+      'Primary DM has emailVerified == true',
+      'Outreach script opens with buyer situation, not product pitch',
+      'Script ends with a question, not a pitch'
+    ]
+  },
+  { id: 's9', phase: 'generate', num: '9', name: 'Section 5: Contacts Table', type: ['logic','llm'], parallel: true,
+    meta: 'Ranking + formatting — LLM assists with title-to-product relevance matching',
+    inputs: ['CONTACTS','prospect_product','product_description','PRIMARY_DM_ID'],
+    outputs: ['SECTION_CONTACTS'],
+    tools: [],
+    prompt: `You are selecting and ranking contacts for inclusion in an intel report.
+
+PROSPECT PRODUCT: {prospect_product}
+PRODUCT DESCRIPTION: {product_description}
+
+ALL CONTACTS ({totalContacts} total):
+{CONTACTS.contacts — JSON array with name, title, normalizedTitles, email, phone, emailVerified, worksAtBuyer}
+
+PRIMARY DM (from Gameplan, if available): {PRIMARY_DM_ID}
+
+SELECT 5-10 contacts most relevant to {prospect_product}. Rank by:
+1. contactId == PRIMARY_DM_ID → always first row
+2. normalizedTitles relevance to product category (use semantic matching — "Director of Career Services" is highly relevant to a career platform even if no keyword overlap)
+3. Title seniority: C-suite > VP > Director > Dean > Manager > Coordinator
+4. emailVerified == true → ranked higher
+5. Has phone number → ranked higher
+6. worksAtBuyer == true (exclude former employees)
+7. Exclude contacts where BOTH email AND phone are null
+
+IMPORTANT: Preserve SLED titles exactly as they appear. Do NOT normalize "Director (Commissioner) of Public Works" to "Director of Public Works".
+
+Return the ranked list of contactIds in order.`,
+    detail: `Three-phase step: deterministic filter → LLM ranking → deterministic formatting.
+
+PHASE 1 — FILTER (deterministic, no LLM):
+  Remove contacts where:
+    worksAtBuyer == false
+    email == null AND phone == null
+  This reduces the candidate pool before the LLM sees it.
+
+PHASE 2 — RANK (LLM-assisted):
+  The filtered list is sent to the LLM with the product description.
+  The LLM scores each contact's relevance because criterion #2 —
+  "normalizedTitles match product" — requires semantic judgment.
+
+  Example: "Director of Career Services" is highly relevant to a
+  career platform, but has zero keyword overlap with "AI-powered
+  resume optimization." Only an LLM can make that connection.
+
+  Ranking criteria (LLM applies all, but #2 needs semantic reasoning):
+    1. contactId == PRIMARY_DM_ID      → always first row
+    2. normalizedTitles match product  → semantic relevance (LLM)
+    3. Title seniority                 → C-suite > VP > Director > Dean > Manager
+    4. emailVerified == true           → ranked higher
+    5. Has phone number                → ranked higher
+
+PHASE 3 — FORMAT (deterministic, no LLM):
+  Take the ranked list and render as markdown.
+  Preserve SLED titles exactly as-is — do NOT normalize.
+  Email column:    show address or "—" if null
+  Phone column:    show number or "—" if null
+  Verified column: ✅ if emailVerified is true, "—" otherwise
+
+OUTPUT: Full markdown table with 5-10 rows.`,
+    outputFormat: '## 👥 Key Contacts\n\n| **Name** | **Title** | **Email** | **Phone** | **Verified** |\n| --- | --- | --- | --- | --- |\n| Don Harjo Daves-Rougeaux | Sr. Advisor to Chancellor | ddaves@cccco.edu | — | ✅ |\n| Anthony Cordova | Vice Chancellor, Digital Innovation | acordova@cccco.edu | (916) 445-1234 | ✅ |\n...\n\n*45 total contacts available in Starbridge.*',
+    edges: [{ target: 's12', label: 'SECTION_CONTACTS → assembly' }],
+    edgeCases: [
+      { label: 'CONTACTS null', action: 'Show "No contacts currently available in Starbridge." Set SECTION_CONTACTS = note.', severity: 'degrade' },
+      { label: '0 after filter', action: 'Same as null — all contacts filtered out (no email AND no phone, or worksAtBuyer=false).', severity: 'degrade' },
+      { label: 'PRIMARY_DM_ID missing (Step 8 skipped)', action: 'Rank contacts without DM priority. First row is best match by title/seniority.', severity: 'degrade' }
+    ]
+  },
+  { id: 's10', phase: 'generate', num: '10', name: 'Section 6: Strategic Signals', type: 'llm',parallel: true,
+    meta: 'LLM: select top signals, write titled paragraphs with source attribution',
+    inputs: ['prospect_product','product_description','campaign_signal','BUYER_NAME','OPPORTUNITIES','AI_CONTEXT'],
+    outputs: ['SECTION_SIGNALS'],
+    tools: [],
+    prompt: `You are a SLED procurement analyst writing Strategic Signals for an intel report.
+
+PROSPECT PRODUCT: {prospect_product}
+PRODUCT DESCRIPTION: {product_description}
+CAMPAIGN SIGNAL: {campaign_signal}
+BUYER: {BUYER_NAME}
+
+OPPORTUNITIES (from Starbridge):
+{OPPORTUNITIES — as JSON}
+
+AI CHAT CONTEXT:
+{AI_CONTEXT}
+
+SIGNAL SELECTION CRITERIA (rank by):
+1. Recency — newer postedDate first
+2. Urgency — has approaching dueDate or untilDate
+3. Specificity — names a program, initiative, or product category
+4. Dollar value — has purchaseAmount
+5. Reply relevance — related to campaign_signal
+6. Type tiebreaker (content-derived — classify each signal by its content, not just the raw API type):
+   RFP > Contract Expiration > Budget > Board Discussion > Purchase > Leadership > Grant > Conference
+
+   NOTE: The Starbridge API returns 4 base types (Meeting, Purchase, RFP, Contract).
+   Classify into finer categories based on content analysis:
+   - Meeting about budget approval    → "Budget"
+   - Meeting about leadership change  → "Leadership"
+   - Meeting about board priorities   → "Board Discussion"
+   - Meeting about a conference       → "Conference"
+   - Contract nearing untilDate       → "Contract Expiration"
+   - Purchase tied to grant funding   → "Grant"
+   - If content is ambiguous, fall back to the raw API type
+
+OUTPUT FORMAT:
+Select top 3-6 signals. For each write:
+- Descriptive title (human-readable, NOT raw API title)
+- 2-4 sentence paragraph: what happened, what it means, product connection (if natural)
+- Source attribution: *(Board meeting, November 2025)*
+
+QUALITY BAR:
+"The board discussed improving outcomes" = REJECTED (too vague)
+"The Board of Governors approved a 'demonstration project' in Nov 2025 for shared data infrastructure across 116 colleges" = ACCEPTED`,
+    detail: `LLM generation.
+
+OUTPUT: 3-6 titled signal paragraphs with source attribution.
+  Each paragraph: 2-4 sentences — what happened, what it means, product connection (if natural).
+
+SIGNAL TYPE CLASSIFICATION:
+  The Starbridge API returns 4 base types: Meeting, Purchase, RFP, Contract.
+  The LLM classifies each signal into a finer 8-type hierarchy based on content:
+
+  RFP                  — raw API type "RFP"
+  Contract Expiration  — Contract with approaching untilDate
+  Budget               — Meeting/discussion about budget approvals or allocations
+  Board Discussion     — Meeting about board priorities, strategic plans, votes
+  Purchase             — raw API type "Purchase"
+  Leadership           — Meeting about new hires, role changes, departures
+  Grant                — Purchase or Meeting tied to grant funding
+  Conference           — Meeting about event planning, conference attendance
+
+  Two "Meeting" records are NOT equal — a board budget vote outranks a conference agenda.
+  When content is ambiguous, fall back to the raw API type name.
+
+DATA INJECTED INTO PROMPT:
+  prospect_product + product_description + campaign_signal  ← Clay webhook
+  BUYER_NAME                                                ← Step 2
+  OPPORTUNITIES                                             ← Step 3C
+  AI_CONTEXT                                                ← Step 3D
+
+FALLBACK HIERARCHY:
+  1. OPPORTUNITIES + AI_CONTEXT  (best — cross-reference both)
+  2. OPPORTUNITIES only          (still good — raw procurement data)
+  3. AI_CONTEXT only             (extract signals from AI narrative)
+  4. Neither available           → "No signals available" message`,
+    outputFormat: '## 📡 Recent Strategic Signals\n\n#### Vision 2030 — Common Cloud Data Platform\nThe Board of Governors approved a "demonstration project" in November 2025...\n*(Board of Governors meeting, November 2025)*\n\n#### CCCApply Modernization\nThe Chancellor\'s Office is modernizing CCCApply to reduce student drop-off...\n*(Strategic plan, Q1 2026)*',
+    edges: [{ target: 's12', label: 'SECTION_SIGNALS → assembly' }],
+    edgeCases: [
+      { label: 'OPPORTUNITIES null', action: 'Extract signals from AI_CONTEXT only. Bullets/paragraphs will lack procurement-specific data (amounts, due dates).', severity: 'degrade' },
+      { label: 'AI_CONTEXT null', action: 'Use OPPORTUNITIES only. Signals lack strategic narrative context.', severity: 'degrade' },
+      { label: 'Both OPPORTUNITIES + AI_CONTEXT null', action: 'Show "No strategic signals available for this buyer." Set SECTION_SIGNALS = note.', severity: 'skip' }
+    ],
+    qualityRules: [
+      'Every signal includes at least one specific fact (date, amount, initiative name)',
+      'Source attribution in parentheses at end of each signal paragraph',
+      'Do not force product connections — only mention if natural'
+    ]
+  },
+  { id: 's11', phase: 'generate', num: '11', name: 'Section 7: Footer', type: 'template',parallel: true,
+    meta: 'Template fill — timestamp + data source attribution',
+    inputs: ['current date','AI_CONTEXT availability'],
+    outputs: ['SECTION_FOOTER'],
+    tools: [],
+    prompt: null,
+    detail: `Template fill — no LLM call.
+
+STANDARD FOOTER:
+  ---
+  *Generated Starbridge Intelligence {month} {year}*
+  *Data source: Starbridge buyer profile, contacts, AI analysis, and opportunity database*
+
+IF AI CHAT WAS UNAVAILABLE (Step 3D timed out):
+  ---
+  *Generated Starbridge Intelligence {month} {year}*
+  *Data source: Starbridge buyer profile, contacts, and opportunity database.*
+  *AI analysis was unavailable for this report.*
+
+VARIABLES:
+  {month} ← current month name (e.g. "February")
+  {year}  ← current year (e.g. "2026")`,
+    outputFormat: '---\n\n*Generated Starbridge Intelligence February 2026*\n\n*Data source: Starbridge buyer profile, contacts, AI analysis, and opportunity database*',
+    edges: [{ target: 's12', label: 'SECTION_FOOTER → assembly' }],
+    edgeCases: [{ label: 'AI_CONTEXT unavailable (Step 3D timed out)', action: 'Use alternate footer: omit "AI analysis" from data source line, add "*AI analysis was unavailable for this report.*"', severity: 'degrade' }]
+  },
+
+  // ─── Phase: Assemble ───
+  { id: 's12', phase: 'assemble', num: '12', name: 'Assemble Final Report', type: 'logic',    meta: 'Concatenate all sections in order, clean up empty sections',
+    inputs: ['SECTION_HEADER','SECTION_SNAPSHOT','SECTION_RELEVANCY','SECTION_GAMEPLAN','SECTION_CONTACTS','SECTION_SIGNALS','SECTION_FOOTER'],
+    outputs: ['REPORT_MARKDOWN'],
+    tools: [],
+    prompt: null,
+    detail: `Wait for all parallel section branches to complete, then concatenate.
+
+PARALLEL INPUT BRANCHES (Steps 5-11 run concurrently):
+  Branch A: s5 (Header)                → completes fast (template)
+  Branch B: s6 (Snapshot)              → completes fast (template)
+  Branch C: s7 → s8 → s9 (sequential) → CRITICAL PATH (2 LLM + 1 hybrid)
+  Branch D: s10 (Signals)              → completes independently (LLM)
+  Branch E: s11 (Footer)               → completes fast (template)
+
+  This step fires once ALL branches finish. The s7→s8→s9 chain is
+  the bottleneck — branches A, B, D, E typically finish first.
+  Sections arrive in unpredictable order. Do NOT assume sequence.
+
+ASSEMBLY ORDER (fixed, regardless of completion order):
+  1. SECTION_HEADER
+  2. SECTION_SNAPSHOT
+     ---
+  3. SECTION_RELEVANCY         (skip if "")
+     ---
+  4. SECTION_GAMEPLAN          (skip if "")
+     ---
+  5. SECTION_CONTACTS          (skip if "")
+     ---
+  6. SECTION_SIGNALS
+     ---
+  7. SECTION_FOOTER
+
+ERROR COLLECTION:
+  If a branch failed (section = ""), skip it in assembly.
+  The assembly order is fixed — only the content of each slot changes.
+  A failed s10 doesn't block or affect s7/s8/s9 output.
+
+CLEANUP:
+  Remove --- dividers adjacent to empty/skipped sections
+  Collapse double blank lines to single
+  Ensure exactly one blank line before and after each ---`,
+    outputFormat: 'REPORT_MARKDOWN = "# 📊 California Community Colleges — Intelligence Report for VMock\\n\\n> 🏛️\\n> ...\\n\\n---\\n\\n## 🎯 Relevancy Analysis\\n\\n...\\n\\n---\\n\\n..."',
+    edges: [{ target: 's13', label: 'REPORT_MARKDOWN → validation' }, { target: 's14', label: 'REPORT_MARKDOWN → Response metadata' }],
+    edgeCases: []
+  },
+  { id: 's13', phase: 'assemble', num: '13', name: 'Validate Report', type: ['validate','llm'],    meta: '9-point quality checklist — LLM verifies content quality, code checks structure',
+    inputs: ['REPORT_MARKDOWN','PROFILE','CONTACTS','OPPORTUNITIES','AI_CONTEXT'],
+    outputs: ['validated REPORT_MARKDOWN'],
+    tools: [],
+    prompt: `You are validating an assembled intel report before delivery.
+
+REPORT:
+{REPORT_MARKDOWN}
+
+SOURCE DATA (ground truth for hallucination check):
+- PROFILE: {PROFILE — JSON}
+- CONTACTS: {CONTACTS — JSON}
+- OPPORTUNITIES: {OPPORTUNITIES — JSON}
+- AI_CONTEXT: {AI_CONTEXT}
+
+Run these checks and report PASS or FAIL for each:
+
+CHECK 2: Every Relevancy Analysis bullet references a SPECIFIC signal, initiative, or data point that exists in the source data above. Generic claims like "investing in technology" = FAIL.
+
+CHECK 4: The Outreach Script opens with the BUYER'S situation (their initiative, their challenge), NOT the vendor's product pitch. First clause should reference the buyer.
+
+CHECK 6: Every Signal paragraph includes at least one specific fact: a date, dollar amount, initiative name, or timeframe.
+
+CHECK 7: Every factual claim in the report (dollar amounts, dates, initiative names, contact titles) can be traced to a field in PROFILE, CONTACTS, OPPORTUNITIES, or AI_CONTEXT. Flag any fact that appears in the report but NOT in any source data.
+
+For each FAIL: identify the specific text that fails and suggest a fix.`,
+    detail: `Hybrid step: 5 deterministic checks + 4 LLM-assessed checks.
+
+DETERMINISTIC CHECKS (code — no LLM needed):
+  1. Buyer name in header matches BUYER_NAME (string comparison)
+  3. Primary DM has emailVerified == true (lookup in CONTACTS)
+  5. No contact rows where BOTH email AND phone are "—" (parse table)
+  8. Procurement score consistent between Snapshot and Gameplan (string match)
+  9. Footer month/year matches current date (date comparison)
+
+LLM CHECKS (require judgment — see prompt):
+  2. Every Relevancy bullet references a specific signal (not generic)
+  4. Outreach script opens with buyer situation, not vendor pitch
+  6. Signal paragraphs include dates, amounts, or timeframes
+  7. No hallucinated data — every fact traces to source data
+
+WHY LLM: Checks 2, 4, 6, and 7 require semantic understanding.
+"Investing in technology upgrades" looks like a real signal but is
+too vague to be actionable. Only an LLM can distinguish this from
+"The Board approved a $4.2M demonstration project in November 2025."
+
+ON FAILURE:
+  Fix the specific issue in REPORT_MARKDOWN
+  Re-run the failed check to confirm
+  Do NOT return a report with known quality issues`,
+    outputFormat: 'All 9 checks pass → proceed to Step 14 (return)\nCheck fails → fix, re-validate, then proceed',
+    edges: [{ target: 's14', label: 'validated report → return' }],
+    edgeCases: [
+      { label: 'Check fails — fixable', action: 'Auto-fix the issue (e.g., wrong name in header, missing date). Re-run check to confirm. Do NOT return report with known issues.', severity: 'degrade' },
+      { label: 'Check fails — unfixable (hallucinated data)', action: 'Remove the hallucinated content. Regenerate the affected section if possible, otherwise omit it.', severity: 'degrade' },
+      { label: 'Multiple checks fail', action: 'Fix all issues sequentially. If 3+ checks fail, flag report for QA review in metadata.', severity: 'degrade' }
+    ],
+    qualityRules: [
+      'Buyer name matches resolved name, not search query',
+      'No hallucinated dollar amounts or dates',
+      'Procurement score consistent across all sections'
+    ]
+  },
+  { id: 's14', phase: 'assemble', num: '14', name: 'Return Response', type: 'template',    meta: 'JSON response payload with report markdown + metadata',
+    inputs: ['REPORT_MARKDOWN','validated REPORT_MARKDOWN','BUYER_ID','BUYER_NAME','ALT_MATCHES','metadata'],
+    outputs: ['final JSON response'],
+    tools: [],
+    prompt: null,
+    detail: `Return the final JSON payload to Clay via webhook.
+
+RESPONSE STRUCTURE:
+{
+  "status": "success",
+  "buyer_id": "{BUYER_ID}",
+  "buyer_name": "{BUYER_NAME}",
+  "alternative_matches": [{ALT_MATCHES}],
+  "report_markdown": "{REPORT_MARKDOWN}",
+  "metadata": {
+    "profile_available": true | false,
+    "contacts_count": {number},
+    "opportunities_count": {number},
+    "ai_chat_available": true | false,
+    "sections_generated": ["header", "snapshot", ...],
+    "generation_timestamp": "{ISO 8601}"
+  }
+}
+
+FIELD SOURCES:
+  status               ← always "success" at this point
+  buyer_id             ← BUYER_ID from Step 2
+  buyer_name           ← BUYER_NAME from Step 2
+  alternative_matches  ← ALT_MATCHES from Step 2
+  report_markdown      ← REPORT_MARKDOWN from Step 13 (validated)
+  metadata.*           ← derived from null-checks on each data source`,
+    outputFormat: '{\n  "status": "success",\n  "buyer_id": "bf7105f9-...",\n  "buyer_name": "California Community Colleges",\n  "report_markdown": "# 📊 ...",\n  "metadata": {\n    "profile_available": true,\n    "contacts_count": 45,\n    "opportunities_count": 23,\n    "ai_chat_available": true,\n    "sections_generated": ["header","snapshot","relevancy","gameplan","contacts","signals","footer"]\n  }\n}',
+    edges: [],
+    edgeCases: []
+  }
+];
+
+// ─── Constants ───
+
+const PHASE_LABELS = {
+  source: 'Data Source', input: 'Input Validation', resolve: 'Buyer Resolution', gather: 'Data Gathering (Parallel)',
+  map: 'Data Mapping', generate: 'Section Generation', assemble: 'Assembly & Output'
+};
+
+// Maps each input variable to its source (step ID, 'webhook', or 'system')
+const INPUT_SOURCES = {
+  'buyer_name': 's0', 'buyer_domain': 's0', 'prospect_product': 's0',
+  'product_description': 's0', 'campaign_signal': 's0',
+  'prospect_name': 's0', 'prospect_email': 's0',
+  'validated inputs': 's1',
+  'BUYER_ID': 's2', 'BUYER_NAME': 's2', 'ALT_MATCHES': 's2',
+  'PROFILE': 's3a', 'PROFILE.extraData': 's3a', 'PROFILE.stateCode': 's3a',
+  'CONTACTS': 's3b',
+  'OPPORTUNITIES': 's3c',
+  'AI_CONTEXT': 's3d', 'AI_CONTEXT availability': 's3d',
+  'TYPE_EMOJI': 's4', 'TYPE_LABEL': 's4', 'SIZE_LABEL': 's4', 'SIZE_VALUE': 's4',
+  'SECTION_HEADER': 's5', 'SECTION_SNAPSHOT': 's6',
+  'SECTION_RELEVANCY': 's7', 'RELEVANCY_BULLETS': 's7',
+  'SECTION_GAMEPLAN': 's8', 'PRIMARY_DM_ID': 's8',
+  'SECTION_CONTACTS': 's9', 'SECTION_SIGNALS': 's10', 'SECTION_FOOTER': 's11',
+  'REPORT_MARKDOWN': 's12', 'validated REPORT_MARKDOWN': 's13',
+  'current date': 'system', 'metadata': 'system',
+};
+
+function getSourceLabel(src) {
+  if (src === 'system') return 'System';
+  const step = STEPS.find(s => s.id === src);
+  return step ? `Step ${step.num}: ${step.name}` : src;
+}
+
+// Type helpers — type can be a string ('llm') or array (['tool','llm'])
+function getTypes(s) { return Array.isArray(s.type) ? s.type : [s.type]; }
+function primaryType(s) { return getTypes(s)[0]; }
+function hasType(s, t) { return getTypes(s).includes(t); }
+function typeBadges(s) {
+  return getTypes(s).map(t => `<span class="step-badge badge-${t}">${t}</span>`).join(' ');
+}
+
+// ─── Core Functions ───
+
+function focusPhase(p) {
+  state.focusPhase = p;
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.toggle('active',
+    b.textContent.toLowerCase().includes(p === 'all' ? 'full' : p === 'gather' ? 'data' : 'gen')));
+  if (state.view === 'diagram') renderDiagram(); else renderPipeline();
+}
+
+function phaseMatch(phase, focus) {
+  if (focus === 'gather') return ['source','input','resolve','gather','map'].includes(phase);
+  if (focus === 'generate') return ['generate','assemble'].includes(phase);
+  return true;
+}
+
+// ─── List View ───
+
+function renderPipeline() {
+  const el = document.getElementById('pipeline');
+  let html = '';
+  let lastPhase = '';
+  let inParallel = false;
+
+  STEPS.forEach((s, i) => {
+    if (s.phase !== lastPhase) {
+      if (inParallel) { html += '</div>'; inParallel = false; }
+      html += `<div class="phase-label">${PHASE_LABELS[s.phase]}</div>`;
+      lastPhase = s.phase;
+    }
+    if (s.parallel && !inParallel) { html += '<div class="parallel-group">'; inParallel = true; }
+    if (!s.parallel && inParallel) { html += '</div>'; inParallel = false; }
+
+    const dimmed = state.focusPhase !== 'all' && !phaseMatch(s.phase, state.focusPhase);
+    const selected = state.selectedStep === s.id;
+    html += `<div class="step ${selected ? 'selected' : ''} ${dimmed ? 'dimmed' : ''}" onclick="selectStep('${s.id}')">
+      <div class="step-num">${typeBadges(s)} Step ${s.num}</div>
+      <div class="step-name">${s.name}</div>
+      <div class="step-meta">${s.meta}</div>
+    </div>`;
+  });
+
+  if (inParallel) html += '</div>';
+  el.innerHTML = html;
+}
+
+function selectStep(id) {
+  state.selectedStep = id;
+  renderPipeline();
+  renderDetail(id);
+  updatePrompt();
+}
+
+function renderInputChips(inputs) {
+  // Group inputs by source
+  const groups = {};
+  inputs.forEach(name => {
+    const src = INPUT_SOURCES[name] || 'unknown';
+    if (!groups[src]) groups[src] = [];
+    groups[src].push(name);
+  });
+
+  let html = '';
+  // Sort: webhook first, then by step number, system last
+  const order = ['webhook', ...STEPS.map(s => s.id), 'system', 'unknown'];
+  const sortedKeys = Object.keys(groups).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+
+  sortedKeys.forEach(src => {
+    const label = getSourceLabel(src);
+    const stepId = (src !== 'webhook' && src !== 'system' && src !== 'unknown') ? src : null;
+    const clickAttr = stepId ? ` onclick="navToStep('${stepId}')"` : '';
+    const linkClass = stepId ? ' src-link' : '';
+
+    html += `<div class="input-group">`;
+    html += `<div class="input-group-label">from <span class="${linkClass}"${clickAttr}>${label}</span></div>`;
+    html += `<div class="data-flow">`;
+    groups[src].forEach(n => { html += `<span class="data-chip chip-in">${n}</span>`; });
+    html += `</div></div>`;
+  });
+  return html;
+}
+
+function navToStep(id) {
+  if (state.view === 'diagram') { selectDiagramNode(id); }
+  else { selectStep(id); document.getElementById('step-' + id)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+}
+
+function renderDetail(id) {
+  const s = STEPS.find(x => x.id === id);
+  const el = document.getElementById('detail');
+  if (!s) { el.innerHTML = '<div class="detail-empty">Click a step to see details</div>'; return; }
+
+  let html = `<h2>Step ${s.num}: ${s.name}</h2>`;
+  html += `<div class="subtitle">${s.meta}</div>`;
+
+  // Tools
+  if (s.tools.length) {
+    html += `<div class="detail-section"><h3><span class="dot" style="background:var(--cyan)"></span>Tool Calls</h3><div class="data-flow">`;
+    s.tools.forEach(t => { html += `<span class="data-chip chip-tool">${t}</span>`; });
+    html += `</div></div>`;
+  }
+
+  // Inputs (grouped by source)
+  html += `<div class="detail-section"><h3><span class="dot" style="background:var(--blue)"></span>Data In</h3>`;
+  html += renderInputChips(s.inputs);
+  html += `</div>`;
+
+  // Outputs
+  html += `<div class="detail-section"><h3><span class="dot" style="background:var(--green)"></span>Data Out</h3><div class="data-flow">`;
+  s.outputs.forEach(d => { html += `<span class="data-chip chip-out">${d}</span>`; });
+  html += `</div></div>`;
+
+  // Feeds into
+  if (s.edges.length) {
+    html += `<div class="detail-section"><h3><span class="dot" style="background:var(--orange)"></span>Feeds Into</h3>`;
+    s.edges.forEach(e => {
+      const target = STEPS.find(x => x.id === e.target);
+      if (target) {
+        html += `<div class="arrow-row"><span class="arrow">&rarr;</span> <span class="target">${target.name}</span> <span style="color:var(--text-dim);font-size:11px">(${e.label})</span></div>`;
+      }
+    });
+    html += `</div>`;
+  }
+
+  // Prompt / Logic / Template — for hybrid nodes, show logic first then LLM prompt
+  if (s.prompt || s.detail) {
+    const pt = primaryType(s);
+    const isHybrid = getTypes(s).length > 1;
+    if (isHybrid && s.detail) {
+      const detailLabel = pt === 'tool' ? 'Tool Logic' : pt === 'validate' ? 'Validation Logic' : pt === 'logic' ? 'Logic' : 'Detail';
+      const detailColor = pt === 'tool' ? 'var(--green)' : pt === 'validate' ? 'var(--red)' : 'var(--orange)';
+      html += `<div class="detail-section"><h3><span class="dot" style="background:${detailColor}"></span>${detailLabel}</h3>`;
+      html += `<div class="prompt-block">${escHtml(s.detail)}</div>`;
+      html += `</div>`;
+    }
+    if (hasType(s, 'llm') && s.prompt) {
+      html += `<div class="detail-section"><h3><span class="dot" style="background:var(--purple)"></span>LLM Prompt</h3>`;
+      const saved = state.editedPrompts[s.id] || s.prompt;
+      html += `<div class="edit-hint">Click to edit this prompt. Changes update the copy output below.</div>`;
+      html += `<div class="prompt-block"><div class="editable" contenteditable="true" id="promptEdit-${s.id}" oninput="onPromptEdit('${s.id}')">${escHtml(saved)}</div></div>`;
+      html += `</div>`;
+    }
+    if (!isHybrid && s.detail) {
+      const detailLabel = pt === 'template' ? 'Template' : pt === 'validate' ? 'Validation' : pt === 'llm' ? 'Detail' : 'Logic';
+      const detailColor = pt === 'template' ? 'var(--blue)' : pt === 'validate' ? 'var(--red)' : pt === 'llm' ? 'var(--purple)' : 'var(--orange)';
+      html += `<div class="detail-section"><h3><span class="dot" style="background:${detailColor}"></span>${detailLabel}</h3>`;
+      html += `<div class="prompt-block">${escHtml(s.detail)}</div>`;
+      html += `</div>`;
+    }
+  }
+
+  // Quality rules
+  if (s.qualityRules && s.qualityRules.length) {
+    html += `<div class="detail-section"><h3><span class="dot" style="background:var(--red)"></span>Quality Rules</h3>`;
+    s.qualityRules.forEach(r => { html += `<div class="quality-rule">${r}</div>`; });
+    html += `</div>`;
+  }
+
+  // Edge cases
+  if (s.edgeCases && s.edgeCases.length) {
+    html += `<div class="detail-section"><h3><span class="dot" style="background:var(--orange)"></span>Errors &amp; Fallbacks</h3>`;
+    s.edgeCases.forEach(e => {
+      const sev = e.severity || 'degrade';
+      const sevLabel = sev === 'stop' ? 'STOP' : sev === 'skip' ? 'SKIP' : 'DEGRADE';
+      html += `<div class="edge-case ec-${sev}"><span class="ec-severity">${sevLabel}</span><span class="ec-label">${e.label}</span><span class="ec-action">${e.action}</span></div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Example output
+  if (s.outputFormat) {
+    html += `<div class="detail-section"><h3><span class="dot" style="background:var(--green)"></span>Example Output</h3>`;
+    html += `<div class="output-block">${escHtml(s.outputFormat)}</div></div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+// ─── Prompt Output Bar ───
+
+function onPromptEdit(id) {
+  const el = document.getElementById('promptEdit-' + id);
+  if (el) { state.editedPrompts[id] = el.innerText; updatePrompt(); }
+}
+
+function updatePrompt() {
+  const el = document.getElementById('promptOutput');
+  if (!state.selectedStep) { el.textContent = 'Select a step to see its prompt, data flow, and output format.'; return; }
+  const s = STEPS.find(x => x.id === state.selectedStep);
+  if (!s) return;
+
+  if (hasType(s, 'llm') && s.prompt) {
+    const prompt = state.editedPrompts[s.id] || s.prompt;
+    el.textContent = prompt + (s.detail ? '\n\n───────────────────\n\n' + s.detail : '');
+  } else if (s.detail) {
+    el.textContent = s.detail;
+  } else {
+    el.textContent = `Step ${s.num}: ${s.name}\n\n${s.meta}`;
+  }
+}
+
+function copyPrompt() {
+  const text = document.getElementById('promptOutput').textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copyBtn');
+    btn.textContent = 'Copied!'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy Prompt'; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
+function togglePromptBar() {
+  state.promptMinimized = !state.promptMinimized;
+  const bar = document.getElementById('promptOutputBar');
+  const btn = document.getElementById('minimizeBtn');
+  bar.classList.toggle('minimized', state.promptMinimized);
+  btn.innerHTML = state.promptMinimized ? '&#9652;' : '&#9662;';
+  btn.title = state.promptMinimized ? 'Expand' : 'Minimize';
+}
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ═══════════════════════════════════════════
+//  DIAGRAM VIEW
+// ═══════════════════════════════════════════
+
+const NODE_W = 190;
+
+// Spread-out positions for readable flowchart
+const NODE_POSITIONS = {
+  s0:  { x: 530, y: 60 },
+  s1:  { x: 530, y: 280 },
+  s2:  { x: 530, y: 500 },
+  s3a: { x: 60,  y: 760 },
+  s3b: { x: 330, y: 760 },
+  s3c: { x: 600, y: 760 },
+  s3d: { x: 870, y: 760 },
+  s4:  { x: 60,  y: 1020 },
+  s5:  { x: 20,  y: 1280 },
+  s6:  { x: 270, y: 1280 },
+  s7:  { x: 520, y: 1280 },
+  s8:  { x: 520, y: 1540 },
+  s9:  { x: 520, y: 1800 },
+  s10: { x: 790, y: 1280 },
+  s11: { x: 1060, y: 1280 },
+  s12: { x: 530, y: 2060 },
+  s13: { x: 530, y: 2280 },
+  s14: { x: 530, y: 2500 },
+};
+
+function setView(v) {
+  state.view = v;
+  const app = document.querySelector('.app');
+  document.getElementById('viewList').classList.toggle('active', v === 'list');
+  document.getElementById('viewDiagram').classList.toggle('active', v === 'diagram');
+  document.getElementById('zoomControls').style.display = v === 'diagram' ? 'flex' : 'none';
+  if (v === 'diagram') {
+    app.classList.add('diagram-mode');
+    renderDiagram();
+  } else {
+    app.classList.remove('diagram-mode');
+    closeDiagramDetail();
+  }
+}
+
+function zoomDiagram(delta) {
+  if (delta === 0) {
+    // Fit to view: calculate zoom to fit canvas height in viewport
+    const wrap = document.getElementById('diagramWrap');
+    const viewH = wrap.clientHeight;
+    const viewW = wrap.clientWidth;
+    let maxX = 0, maxY = 0;
+    Object.values(NODE_POSITIONS).forEach(p => {
+      if (p.x + NODE_W + 60 > maxX) maxX = p.x + NODE_W + 60;
+      if (p.y + 120 > maxY) maxY = p.y + 120;
+    });
+    state.zoom = Math.min(viewW / (maxX + 40), viewH / (maxY + 40), 1.5);
+    state.zoom = Math.round(state.zoom * 20) / 20; // round to 0.05
+  } else {
+    state.zoom = Math.max(0.2, Math.min(2.0, state.zoom + delta));
+    state.zoom = Math.round(state.zoom * 20) / 20;
+  }
+  applyZoom();
+}
+
+function applyZoom() {
+  const canvas = document.getElementById('diagramCanvas');
+  canvas.style.transform = `scale(${state.zoom})`;
+  document.getElementById('zoomLevel').textContent = Math.round(state.zoom * 100) + '%';
+}
+
+function renderDiagram() {
+  const nodesEl = document.getElementById('diagramNodes');
+  const svgEl = document.getElementById('diagramSvg');
+  const canvas = document.getElementById('diagramCanvas');
+
+  // Calculate canvas bounds
+  let maxX = 0, maxY = 0;
+  Object.values(NODE_POSITIONS).forEach(p => {
+    if (p.x + NODE_W + 60 > maxX) maxX = p.x + NODE_W + 60;
+    if (p.y + 120 > maxY) maxY = p.y + 120;
+  });
+  const canvasW = maxX + 80;
+  const canvasH = maxY + 80;
+
+  canvas.style.width = canvasW + 'px';
+  canvas.style.height = canvasH + 'px';
+  nodesEl.style.width = canvasW + 'px';
+  nodesEl.style.height = canvasH + 'px';
+  svgEl.setAttribute('width', canvasW);
+  svgEl.setAttribute('height', canvasH);
+  svgEl.style.width = canvasW + 'px';
+  svgEl.style.height = canvasH + 'px';
+
+  applyZoom();
+
+  // Draw nodes
+  let nodesHtml = '';
+  STEPS.forEach(s => {
+    const pos = NODE_POSITIONS[s.id];
+    if (!pos) return;
+    const dimmed = state.focusPhase !== 'all' && !phaseMatch(s.phase, state.focusPhase);
+    const selected = state.selectedStep === s.id;
+    nodesHtml += `<div class="dnode dnode-${primaryType(s)} ${selected ? 'dnode-selected' : ''} ${dimmed ? 'dnode-dimmed' : ''}"
+      style="left:${pos.x}px;top:${pos.y}px;width:${NODE_W}px"
+      onclick="selectDiagramNode('${s.id}')" id="dnode-${s.id}">
+      <div class="dnode-num">${typeBadges(s)} ${s.num}</div>
+      <div class="dnode-name">${s.name}</div>
+      <div class="dnode-meta">${s.meta.length > 55 ? s.meta.slice(0, 52) + '...' : s.meta}</div>
+    </div>`;
+  });
+
+  // Parallel group bracket around s3a-s3d (data gathering)
+  const pLeft = NODE_POSITIONS.s3a.x - 16;
+  const pTop = NODE_POSITIONS.s3a.y - 24;
+  const pRight = NODE_POSITIONS.s3d.x + NODE_W + 16;
+  const pBottom = NODE_POSITIONS.s3d.y + 125;
+  nodesHtml += `<div class="dgroup-parallel" style="left:${pLeft}px;top:${pTop}px;width:${pRight - pLeft}px;height:${pBottom - pTop}px">
+    <span class="dgroup-parallel-label">PARALLEL — all 4 run simultaneously</span>
+  </div>`;
+
+  // Parallel group bracket around s5, s6, s7, s10, s11 (section generation)
+  const p2Left = NODE_POSITIONS.s5.x - 16;
+  const p2Top = NODE_POSITIONS.s5.y - 24;
+  const p2Right = NODE_POSITIONS.s11.x + NODE_W + 16;
+  const p2Bottom = NODE_POSITIONS.s9.y + 125;
+  nodesHtml += `<div class="dgroup-parallel" style="left:${p2Left}px;top:${p2Top}px;width:${p2Right - p2Left}px;height:${p2Bottom - p2Top}px">
+    <span class="dgroup-parallel-label">PARALLEL — 5 sections launch simultaneously, s7→s8→s9 sequential within</span>
+  </div>`;
+
+  // Sequential sub-chain bracket around s7→s8→s9
+  const seqLeft = NODE_POSITIONS.s7.x - 12;
+  const seqTop = NODE_POSITIONS.s7.y - 18;
+  const seqRight = NODE_POSITIONS.s7.x + NODE_W + 12;
+  const seqBottom = NODE_POSITIONS.s9.y + 115;
+  nodesHtml += `<div class="dgroup-sequential" style="left:${seqLeft}px;top:${seqTop}px;width:${seqRight - seqLeft}px;height:${seqBottom - seqTop}px">
+    <span class="dgroup-sequential-label">SEQUENTIAL — s7 → s8 → s9</span>
+  </div>`;
+
+  nodesEl.innerHTML = nodesHtml;
+
+  // Draw SVG arrows (arrowheads drawn as polygons, not markers)
+  let svgHtml = '';
+
+  // Pre-compute incoming/outgoing counts per node for spread
+  const incomingEdges = {};  // target_id → [source_id, ...]
+  const drawnEdges = new Set();
+  STEPS.forEach(s => {
+    if (!s.edges) return;
+    s.edges.forEach(e => {
+      const key = s.id + '->' + e.target;
+      if (drawnEdges.has(key)) return;
+      drawnEdges.add(key);
+      if (!incomingEdges[e.target]) incomingEdges[e.target] = [];
+      incomingEdges[e.target].push(s.id);
+    });
+  });
+
+  const inIdx = {};
+
+  function spreadX(nodeX, index, count) {
+    if (count <= 1) return nodeX + NODE_W / 2;
+    const pad = NODE_W / 2 - Math.min(count - 1, 6) * 5;
+    const usable = NODE_W - pad * 2;
+    return nodeX + pad + (index / (count - 1)) * usable;
+  }
+
+  drawnEdges.clear();
+  STEPS.forEach(s => {
+    const from = NODE_POSITIONS[s.id];
+    if (!from || !s.edges) return;
+    s.edges.forEach(e => {
+      const to = NODE_POSITIONS[e.target];
+      if (!to) return;
+      const key = s.id + '->' + e.target;
+      if (drawnEdges.has(key)) return;
+      drawnEdges.add(key);
+
+      const isActive = state.selectedStep === s.id || state.selectedStep === e.target;
+
+      const fromCx = from.x + NODE_W / 2;
+      const fromBottom = from.y + 90;
+
+      const inCount = (incomingEdges[e.target] || []).length;
+      const iIdx = inIdx[e.target] || 0;
+      inIdx[e.target] = iIdx + 1;
+      const toCx = spreadX(to.x, iIdx, inCount);
+      const toTop = to.y;
+
+      const dy = toTop - fromBottom;
+      const cpOffset = Math.max(40, Math.abs(dy) * 0.35);
+
+      const color = isActive ? '#58a6ff' : 'rgba(48,54,61,0.45)';
+      const width = isActive ? 2.5 : 1.5;
+      const arrowLen = 8;
+      const pathEndY = toTop - arrowLen;
+
+      svgHtml += `<path d="M ${fromCx} ${fromBottom} C ${fromCx} ${fromBottom + cpOffset}, ${toCx} ${toTop - cpOffset}, ${toCx} ${pathEndY}"
+        fill="none" stroke="${color}" stroke-width="${width}"/>`;
+      svgHtml += `<polygon points="${toCx-4},${pathEndY} ${toCx+4},${pathEndY} ${toCx},${toTop}" fill="${color}"/>`;
+    });
+  });
+
+  svgEl.innerHTML = svgHtml;
+}
+
+function selectDiagramNode(id) {
+  state.selectedStep = id;
+  renderDiagram();
+  showDiagramDetail(id);
+  updatePrompt();
+}
+
+function showDiagramDetail(id) {
+  const s = STEPS.find(x => x.id === id);
+  const el = document.getElementById('diagramDetail');
+  if (!s) { closeDiagramDetail(); return; }
+
+  let html = `<button class="detail-close" onclick="closeDiagramDetail()">&times;</button>`;
+  html += `<h2 style="font-size:16px;font-weight:600;color:var(--text-bright);margin-bottom:4px;padding-right:30px">Step ${s.num}: ${s.name}</h2>`;
+  html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px">${s.meta}</div>`;
+
+  // Tools
+  if (s.tools.length) {
+    html += `<div class="detail-section"><h3><span class="dot" style="background:var(--cyan)"></span>Tool Calls</h3><div class="data-flow">`;
+    s.tools.forEach(t => { html += `<span class="data-chip chip-tool">${t}</span>`; });
+    html += `</div></div>`;
+  }
+
+  // Inputs (grouped by source)
+  html += `<div class="detail-section"><h3><span class="dot" style="background:var(--blue)"></span>Data In</h3>`;
+  html += renderInputChips(s.inputs);
+  html += `</div>`;
+
+  // Outputs
+  html += `<div class="detail-section"><h3><span class="dot" style="background:var(--green)"></span>Data Out</h3><div class="data-flow">`;
+  s.outputs.forEach(d => { html += `<span class="data-chip chip-out">${d}</span>`; });
+  html += `</div></div>`;
+
+  // Feeds into
+  if (s.edges && s.edges.length) {
+    html += `<div class="detail-section"><h3><span class="dot" style="background:var(--orange)"></span>Feeds Into</h3>`;
+    s.edges.forEach(e => {
+      const target = STEPS.find(x => x.id === e.target);
+      if (target) {
+          html += `<div class="arrow-row"><span class="arrow">&rarr;</span> <span class="target">${target.name}</span> <span style="color:var(--text-dim);font-size:11px">(${e.label})</span></div>`;
+      }
+    });
+    html += `</div>`;
+  }
+
+  // Prompt / Logic / Template — for hybrid nodes, show logic first then LLM prompt
+  if (s.prompt || s.detail) {
+    const pt = primaryType(s);
+    const isHybrid = getTypes(s).length > 1;
+    if (isHybrid && s.detail) {
+      const detailLabel = pt === 'tool' ? 'Tool Logic' : pt === 'validate' ? 'Validation Logic' : pt === 'logic' ? 'Logic' : 'Detail';
+      const detailColor = pt === 'tool' ? 'var(--green)' : pt === 'validate' ? 'var(--red)' : 'var(--orange)';
+      html += `<div class="detail-section"><h3><span class="dot" style="background:${detailColor}"></span>${detailLabel}</h3>`;
+      html += `<div class="prompt-block">${escHtml(s.detail || '')}</div>`;
+      html += `</div>`;
+    }
+    if (hasType(s, 'llm') && s.prompt) {
+      html += `<div class="detail-section"><h3><span class="dot" style="background:var(--purple)"></span>LLM Prompt</h3>`;
+      const saved = state.editedPrompts[s.id] || s.prompt;
+      html += `<div class="edit-hint">Click to edit this prompt. Changes update the copy output below.</div>`;
+      html += `<div class="prompt-block"><div class="editable" contenteditable="true" id="promptEdit-${s.id}" oninput="onPromptEdit('${s.id}')">${escHtml(saved)}</div></div>`;
+      html += `</div>`;
+    }
+    if (!isHybrid && s.detail) {
+      const detailLabel = pt === 'template' ? 'Template' : pt === 'validate' ? 'Validation' : pt === 'llm' ? 'Detail' : 'Logic';
+      const detailColor = pt === 'template' ? 'var(--blue)' : pt === 'validate' ? 'var(--red)' : pt === 'llm' ? 'var(--purple)' : 'var(--orange)';
+      html += `<div class="detail-section"><h3><span class="dot" style="background:${detailColor}"></span>${detailLabel}</h3>`;
+      html += `<div class="prompt-block">${escHtml(s.detail || '')}</div>`;
+      html += `</div>`;
+    }
+  }
+
+  // Quality rules
+  if (s.qualityRules && s.qualityRules.length) {
+    html += `<div class="detail-section"><h3><span class="dot" style="background:var(--red)"></span>Quality Rules</h3>`;
+    s.qualityRules.forEach(r => { html += `<div class="quality-rule">${r}</div>`; });
+    html += `</div>`;
+  }
+
+  // Edge cases
+  if (s.edgeCases && s.edgeCases.length) {
+    html += `<div class="detail-section"><h3><span class="dot" style="background:var(--orange)"></span>Errors &amp; Fallbacks</h3>`;
+    s.edgeCases.forEach(e => {
+      const sev = e.severity || 'degrade';
+      const sevLabel = sev === 'stop' ? 'STOP' : sev === 'skip' ? 'SKIP' : 'DEGRADE';
+      html += `<div class="edge-case ec-${sev}"><span class="ec-severity">${sevLabel}</span><span class="ec-label">${e.label}</span><span class="ec-action">${e.action}</span></div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Example output
+  if (s.outputFormat) {
+    html += `<div class="detail-section"><h3><span class="dot" style="background:var(--green)"></span>Example Output</h3>`;
+    html += `<div class="output-block">${escHtml(s.outputFormat)}</div></div>`;
+  }
+
+  el.innerHTML = html;
+  el.classList.add('visible');
+}
+
+function closeDiagramDetail() {
+  document.getElementById('diagramDetail').classList.remove('visible');
+  state.selectedStep = null;
+  if (state.view === 'diagram') renderDiagram();
+}
+
+// ─── Zoom Scroll ───
+document.getElementById('diagramWrap').addEventListener('wheel', function(e) {
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 0.05 : -0.05;
+    zoomDiagram(delta);
+  }
+}, { passive: false });
+
+// ─── Init ───
+renderPipeline();
+updatePrompt();
+</script>
+</body>
+</html>
