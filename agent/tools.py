@@ -50,7 +50,7 @@ def _call_custom(tool_name, params):
         url,
         headers={"x-api-key": DATAGEN_API_KEY, "Content-Type": "application/json"},
         json={"input_vars": params},
-        timeout=120,
+        timeout=300,
     )
 
     data = resp.json()
@@ -190,10 +190,69 @@ def buyer_chat(buyer_id, question, max_wait=BUYER_CHAT_MAX_WAIT):
 
 # ── Notion MCP ──────────────────────────────────────────────────────────────
 
+NOTION_MAX_RETRIES = 3
+NOTION_RETRY_DELAYS = [2, 5, 10]  # seconds between retries
+
+
+def _call_notion(tool_name, params):
+    """Call a Notion MCP tool with auto-retry on transient failures (500, timeout)."""
+    last_err = None
+    for attempt in range(NOTION_MAX_RETRIES):
+        try:
+            return client.execute_tool(tool_name, params)
+        except Exception as e:
+            last_err = e
+            err_str = str(e)
+            # Retry on 500 / 502 / 503 / timeout — not on 4xx (schema/auth errors)
+            transient = any(code in err_str for code in
+                           ["500", "502", "503", "timeout", "ETIMEDOUT", "ECONNRESET"])
+            if not transient or attempt == NOTION_MAX_RETRIES - 1:
+                raise
+            delay = NOTION_RETRY_DELAYS[attempt]
+            logger.warning(f"  Notion {tool_name} attempt {attempt+1} failed ({type(e).__name__}), "
+                           f"retrying in {delay}s...")
+            time.sleep(delay)
+    raise last_err  # unreachable, but keeps type checker happy
+
+
 def notion_create_page(title, content, parent_page_id=None):
     params = {
         "pages": [{"properties": {"title": title}, "content": content}]
     }
     if parent_page_id:
         params["parent"] = {"page_id": parent_page_id}
-    return client.execute_tool("mcp_Notion_notion_create_pages", params)
+    return _call_notion("mcp_Notion_notion_create_pages", params)
+
+
+def notion_search(query, query_type=None):
+    """Search Notion pages/databases by query string.
+
+    query_type: "internal" (pages/databases) or "user" (people). None defaults to internal.
+    Returns: list of matching pages/databases with id, title, url.
+    """
+    params = {"query": query}
+    if query_type:
+        params["query_type"] = query_type
+    return _call_notion("mcp_Notion_notion_search", params)
+
+
+def notion_fetch(page_id):
+    """Fetch a Notion page's content by page ID."""
+    return _call_notion("mcp_Notion_notion_fetch", {"id": page_id})
+
+
+def notion_update_page(page_id, properties=None, content=None):
+    """Update an existing Notion page's properties and/or content.
+
+    properties: dict of property updates (e.g. {"title": "New Title"}).
+    content: markdown string to replace page body.
+    """
+    if content:
+        # Replace entire page body
+        data = {"page_id": page_id, "command": "replace_content", "new_str": content}
+        return _call_notion("mcp_Notion_notion_update_page", {"data": data})
+    elif properties:
+        data = {"page_id": page_id, "command": "update_properties", "properties": properties}
+        return _call_notion("mcp_Notion_notion_update_page", {"data": data})
+    else:
+        raise ValueError("notion_update_page requires either properties or content")

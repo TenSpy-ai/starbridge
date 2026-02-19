@@ -26,8 +26,9 @@ A comprehensive context repository for Starbridge.ai's GTM (Go-To-Market) automa
 11. BDR sends the report to the prospect and calls them
 ```
 
-**Current state**: Steps 1-11 are done manually by Hagel (fulfillment operator) in 20-60 minutes.
-**V1 target**: Steps 3-10 are fully automated, completing in < 30 seconds.
+**Current state**: Steps 1-4 manual (Hagel). Steps 5-10 automated by `agent/pipeline.py` (~47s). Steps 5-10 run as a 18-step pipeline: webhook → LLM strategy → Starbridge API discovery → deterministic scoring → parallel enrichment (profile, contacts, AI chat) → LLM report generation → validation → Notion publish.
+**V1 target**: Steps 3-10 fully automated end-to-end via Clay webhook trigger, completing in < 60 seconds.
+**Remaining**: Clay webhook → pipeline trigger (step 3), Slack dispatch of report URL (step 10).
 
 ## Starbridge's Moat
 
@@ -39,11 +40,12 @@ Starbridge monitors 296K+ government/education buyers and has indexed 107M+ boar
 |---|---|---|---|
 | **Smartlead** | Outbound email + reply detection | Gurmohit (deliverability) | Active — webhook config TBD |
 | **Clay** | Routing hub (webhook intake → Datagen → Slack) | Jeremy | Active — workspace 484780 |
-| **Datagen** | Orchestration (Supabase → LLM → report → webhook) | Jeremy | Being built |
+| **Datagen** | Tool hosting (Starbridge custom tools + Notion MCP) | Jeremy | Active — tools deployed, SDK + REST |
+| **Intel Pipeline** | Local orchestrator (`agent/`) — webhook → report → Notion | Jeremy | **Built & tested** — see `agent/README.md` |
+| **Starbridge API** | Buyer data (296K buyers, 107M signals) via Datagen custom tools | Yurii | Active — accessed via Datagen REST |
 | **Supabase** | Signal database (intent signals by domain) | Kushagra | Active — schema pending |
-| **Starbridge API** | Buyer attributes (DM info, budget, logo) | Yurii | Dev-gated — V2 dependency |
 | **Slack** | Dispatch hub (#intent-reports) | All | Active |
-| **Notion/Webflow** | Report hosting | Jeremy / Nastia | TBD |
+| **Notion** | Report hosting — published via Datagen MCP SDK | Jeremy | Active — reports auto-published |
 | **Apollo/Nooks** | Dialer (BDR phone calls) | BDRs | Active |
 
 ## Team
@@ -71,6 +73,17 @@ Starbridge monitors 296K+ government/education buyers and has indexed 107M+ boar
 ```
 CLAUDE.md                              # Entry point — system overview, team, core workflow, critical path
 PLACEHOLDERS.md                        # Index of all {{UNKNOWN}}/{{UNVERIFIED}}/{{TBD}} tags. 320 open items.
+
+agent/                                 # ⭐ Intel brief pipeline — the core automation (see agent/README.md)
+  pipeline.py                          #   18-step orchestrator: 7 phases, parallel execution, hard-fail, ~47s per run
+  llm.py                              #   5 LLM sub-agents via `claude -p` CLI (search_strategy, featured, secondary, shape+publish, fact_check) + ask() Q&A
+  tools.py                            #   Starbridge custom tools (REST) + Notion MCP (Datagen SDK): search, profile, contacts, chat, publish
+  config.py                           #   All tunables + CONFIG_METADATA, runtime editing, factory reset, config snapshotting
+  db.py                               #   SQLite: 4 tables (runs, discoveries, contacts, audit_log), StepTimer, CRUD
+  server.py                           #   FastAPI on port 8111: pipeline-explorer.html, run/batch API, config API (GET/PATCH/reset), run isolation
+  run_vmock.py                         #   End-to-end test runner (VMock webhook → real API + LLM calls → Notion report)
+  pipeline-explorer.html               #   Interactive pipeline monitor UI (run launcher, live step tracking, data explorer, config panel)
+  README.md                           #   Full architecture docs, 18-step reference, scoring algorithm, validation checks
 
 context/                               # Stable company knowledge — changes slowly
   company-overview.md                  #   What Starbridge is, SLED moat, funding ($10M seed → $42M Series A), data flywheel
@@ -140,11 +153,12 @@ decisions/                             # Architecture Decision Records — "why 
   003-dm-later-flow.md                 #   Why decoupling DM lookup from initial intel delivery
   004-multi-signal-allocation.md       #   Kushagra's framework for distributing signals across email sequences
 
-data/                                  # Reference data — what signals and buyers look like
+data/                                  # Reference data + pipeline runtime artifacts
   README.md                            #   What lives here
   signal-taxonomy.md                   #   Signal types (contract expiration, board mention, budget, RFP, leadership change, grant)
   buyer-attributes.md                  #   Attributes from SB API — budget (most valuable per Justin), logo, location, type, etc.
   sample-intel.md                      #   Redacted examples of all 3 intel tiers — real patterns from Slack
+  pipeline.db                          #   SQLite: run history, discoveries, contacts, audit_log (auto-created on first run)
 
 roadmap/                               # What ships when — V1 deadline vs. future vision
   README.md                            #   Current priorities + sequencing
@@ -152,9 +166,11 @@ roadmap/                               # What ships when — V1 deadline vs. fut
   v2-scale.md                         #   V2 — multi-signal, multi-channel, branded reports, SB API integration
   ideas-parking-lot.md                 #   Future ideas — Signal Refresher, batch pre-gen, Procurement Risk Signals, more
   WIP/                                 #   Work-in-progress artifacts — not yet finalized
+    agent-pipeline/                    #     Pipeline design docs and interactive explorers
+      README.md                        #       Index + data architecture docs
     prompts/                           #     Agent prompts and interactive workflow playground
       README.md                        #       Index + data architecture docs
-      intel-report-workflow-v2.html    #       Interactive 19-step pipeline explorer (open in browser)
+      intel-report-workflow-v2.html    #       Interactive 18-step pipeline explorer (open in browser)
       intel-report-workflow.html       #       Earlier v1 (superseded by v2)
       intel-report-agent-directions.md #       Written agent execution spec (14 steps)
       intel-report-prompts.md          #       Agent prompt templates per phase
@@ -170,96 +186,138 @@ roadmap/                               # What ships when — V1 deadline vs. fut
 4. **Datagen over Clay-only**: Complex multi-step logic lives in Datagen. Clay is the router. See decisions/002-datagen-cloud-agents.md.
 5. **Gamma is being replaced**: Non-deterministic, unbranded, manual. See systems/deliverables/gamma-legacy.md.
 6. **52% of PRs from email 2+**: Multi-signal sequences work, but only in the same thread. This drives Kushagra's allocation framework.
+7. **QA scripts**: When building or modifying code that has a UI counterpart or config layer, create/update QA scripts in a `qa/` subfolder. QA scripts verify alignment between code, UI, config, and DB — run them after changes. See `agent/qa/CLAUDE.md`.
 
 ## Critical Path for V1
 
 1. ✅ Document the system (this repo)
 2. ⬜ Kushagra meeting → Supabase schema → Datagen can query signals
 3. ⬜ Explore Clay workspace → webhook config → routing logic
-4. ⬜ Build Datagen agent → Supabase → LLM → Notion → webhook
-5. ⬜ Connect Clay ↔ Datagen ↔ Slack
-6. ⬜ End-to-end test with sample accounts
-7. ⬜ Rollout (target: Tuesday 2/17)
+4. ✅ Build intel pipeline → Starbridge API → LLM → Notion (`agent/`)
+5. ⬜ Connect Clay ↔ pipeline webhook → Slack dispatch
+6. ✅ End-to-end test with sample accounts (VMock — 15+ successful runs, ~47s per run)
+7. ⬜ Rollout — production webhook integration, Slack #intent-reports dispatch, monitoring
 
 ## Key Metrics
 
-| Metric | Current | V1 Target |
+| Metric | Before | Current (Pipeline) | V1 Target |
+|---|---|---|---|
+| PR → intel delivery time | 20-60 min | **~47s** (automated) | < 60s end-to-end |
+| PR → meeting conversion | ~50% | TBD | Maintain or improve |
+| PR rate (prospect → positive reply) | ~0.7% | ~0.7% | Not Jeremy's scope |
+| Monthly email volume target | Ramping | Ramping | 3.3M/month at scale |
+| Pipeline automation rate | 0% | Steps 5-10 automated | > 95% |
+
+## Intel Brief Pipeline (`agent/`)
+
+The core automation. Takes a webhook payload (prospect domain + product info), queries Starbridge's buyer database via Datagen-hosted custom tools, generates a branded intel report via Claude LLM sub-agents, and publishes to Notion — all in ~47 seconds.
+
+**Full docs**: `agent/README.md` (architecture, 18-step reference, scoring algorithm, validation checks, running instructions).
+
+### Quick Architecture
+
+```
+webhook JSON → pipeline.py orchestrator (18 steps, 7 phases)
+                ├── llm.py    — 5 Claude sub-agents via `claude -p` CLI
+                ├── tools.py  — Starbridge API (REST) + Notion (Datagen SDK)
+                ├── db.py     — SQLite persistence + audit logging
+                └── config.py — tunables + metadata + runtime editing + run snapshots
+```
+
+### The 7 Phases
+
+| Phase | Steps | Type | What Happens |
+|---|---|---|---|
+| I-II SOURCE/INPUT | s0, s1 | Python + SQLite | Parse webhook, validate, create DB run stub, load cache |
+| III ANALYZE | s2 | **LLM** | Product → SLED segments, keywords, buyer types, opp types |
+| IV DISCOVER | s3a, s3b, s3c, s3d | **API** (parallel) | Opportunity search (primary + alternate) + buyer type search + buyer geo search |
+| V SELECT | s4, s5 | Python | Deterministic scoring (6 factors), select featured + 4 secondary |
+| VI ENRICH | s6→s9, s7→s10, s8, s11 | **API + LLM** (4 parallel branches) | Profile, contacts, AI chat, generate sections |
+| VII ASSEMBLE | s12, s13, s14 | **LLM** + API | LLM assembles report from s8/s9/s10/s11 sections + publishes to Notion, fact-check, save + respond |
+
+### Key Design Decisions
+
+- **Hard-fail, no fallbacks**: Every step either succeeds or the pipeline fails. Partial state is persisted to SQLite for debugging. No graceful degradation.
+- **s12 assembles from sections**: The report is assembled by the LLM from pre-generated sections: SECTION_FEATURED (s9), SECTION_SECONDARY (s10), SECTION_EXEC_SUMMARY (s8), SECTION_CTA (s11). s12 does NOT receive raw data — raw data is processed upstream by specialized sub-agents in Phase VI.
+- **Deterministic scoring (s4)**: Buyer ranking uses 6 weighted factors (type match 25%, signals 20%, recency 20%, urgency 15%, dollar 10%, keyword 10%) — no LLM involved.
+- **Anti-hallucination**: s9/s10 prompts explicitly separate what the LLM CAN infer from what it CANNOT. s12 assembler is instructed not to add, remove, or alter facts from sections. s13 validates with deterministic checks + LLM internal consistency check on the assembled report.
+- **Run isolation via config snapshotting**: Config is deep-copied at run submission time. Each pipeline run applies its snapshot before executing, so mid-run config changes in the UI only affect the _next_ run. `apply_config_to_modules()` pushes snapshot values into pipeline/tools/llm cached bindings via `setattr()`.
+- **Runtime config editing**: All 31 tunables editable via UI config panel or `PATCH /api/config`. Changes are in-memory only (lost on restart). Factory reset via `POST /api/config/reset`.
+
+### Running
+
+```bash
+# Full end-to-end test (real API + LLM calls → Notion report)
+python agent/run_vmock.py
+
+# Pipeline monitor (web UI on port 8111)
+python -m agent.server
+
+# Q&A sub-agent
+python -m agent.llm "What SLED buyer types does Starbridge support?"
+```
+
+### Environment Requirements
+
+| Variable | Purpose | Required |
 |---|---|---|
-| PR → intel delivery time | 20-60 min | < 30 sec |
-| PR → meeting conversion | ~50% | Maintain or improve |
-| PR rate (prospect → positive reply) | ~0.7% | Not Jeremy's scope (deliverability team) |
-| Monthly email volume target | Ramping | 3.3M/month at scale |
-| Pipeline automation rate | 0% | > 95% |
+| `DATAGEN_API_KEY` | Starbridge custom tools + Notion MCP via Datagen | Yes |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude CLI authentication for LLM sub-agents | Yes |
+| `NOTION_PARENT_PAGE_ID` | Notion page where reports are published as children | Has default |
+| `LLM_MODEL` | Claude model override (default: `claude-opus-4-6`) | No |
 
-## Datagen Python SDK (how to use)
+## Datagen — Two Tool Layers
 
-### Purpose
+Datagen hosts two types of tools, accessed differently. This distinction is critical.
 
-Use the Datagen Python SDK (`datagen-python-sdk`) when you need to run DataGen-connected tools from a local Python codebase (apps, scripts, cron jobs). Use Datagen MCP for interactive discovery/debugging of tool names and schemas.
+### Layer 1: Starbridge Custom Tools (REST)
 
-### Prerequisites
+Custom deployments on Datagen's platform. Called via direct REST, NOT via the SDK.
+
+```python
+# Sync: POST https://api.datagen.dev/apps/{uuid}
+httpx.post(url, headers={"x-api-key": DATAGEN_API_KEY}, json={"input_vars": params})
+
+# Async (buyer_chat): POST /apps/{uuid}/async → poll GET /apps/run/{run_uuid}/output
+```
+
+| Tool | UUID (first 8) | Endpoint |
+|---|---|---|
+| `opportunity_search` | `c15b3524` | Sync REST |
+| `buyer_search` | `e69f8d37` | Sync REST |
+| `buyer_profile` | `74345947` | Sync REST |
+| `buyer_contacts` | `b81036af` | Sync REST |
+| `buyer_chat` | `043dc240` | **Async** (POST → poll) |
+
+All wrapped in `agent/tools.py` — use those functions, not raw REST.
+
+### Layer 2: Standard MCP Tools (SDK)
+
+Connected MCP servers (Notion, Gmail, etc.) accessed via the Datagen Python SDK.
+
+```python
+from datagen_sdk import DatagenClient
+client = DatagenClient()
+result = client.execute_tool("mcp_Notion_notion_create_pages", params)
+```
+
+Notion tools used by the pipeline: `notion_create_page`, `notion_search`, `notion_fetch`, `notion_update_page` — all wrapped in `agent/tools.py`.
+
+### SDK Prerequisites
 
 - Install: `pip install datagen-python-sdk`
 - Auth: set `DATAGEN_API_KEY` in the environment
 
-### Mental model (critical)
-
-- You execute tools by alias name: `client.execute_tool("<tool_alias>", params)`
-- Tool aliases are commonly:
-  - `mcp_<Provider>_<tool_name>` for connected MCP servers (Gmail/Linear/Neon/etc.)
-  - First-party DataGen tools like `listTools`, `searchTools`, `getToolDetails`
-- Always be schema-first: confirm params via `getToolDetails` before calling a tool from code.
-
-### Recommended workflow (always follow)
-
-1) Verify `DATAGEN_API_KEY` exists (if missing, ask user to set it)
-2) Import and create the SDK client:
-   - `from datagen_sdk import DatagenClient`
-   - `client = DatagenClient()`
-3) Discover tool alias with `searchTools` (don't guess)
-4) Confirm tool schema with `getToolDetails`
-5) Execute with `client.execute_tool(tool_alias, params)`
-6) Handle errors:
-   - 401/403: missing/invalid API key OR the target MCP server isn't connected/authenticated in DataGen dashboard
-   - 400/422: wrong params → re-check `getToolDetails` and retry
-
-### Minimal example
+### Discovery (for adding new tools)
 
 ```python
-import os
-from datagen_sdk import DatagenClient
-
-if not os.getenv("DATAGEN_API_KEY"):
-    raise RuntimeError("DATAGEN_API_KEY not set")
-
 client = DatagenClient()
-result = client.execute_tool(
-    "mcp_Gmail_gmail_send_email",
-    {
-        "to": "user@example.com",
-        "subject": "Hello",
-        "body": "Hi from DataGen!",
-    },
-)
-print(result)
+tools = client.execute_tool("listTools")                                    # list all
+matches = client.execute_tool("searchTools", {"query": "send email"})       # search by intent
+details = client.execute_tool("getToolDetails", {"tool_name": "alias"})     # get schema
 ```
 
-### Discovery examples (don't skip)
-
-```python
-from datagen_sdk import DatagenClient
-
-client = DatagenClient()
-
-# List all tools
-tools = client.execute_tool("listTools")
-
-# Search by intent
-matches = client.execute_tool("searchTools", {"query": "send email"})
-
-# Get schema for a tool alias
-details = client.execute_tool("getToolDetails", {"tool_name": "mcp_Gmail_gmail_send_email"})
-```
+Always be schema-first: confirm params via `getToolDetails` before calling a tool from code.
 
 ## CRITICAL RULES
 

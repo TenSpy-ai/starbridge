@@ -27,43 +27,32 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "pipeline.db")
 # Override via env var for a different workspace / parent page.
 # To find the ID: open the parent page in Notion → Share → Copy link → extract
 # the 32-char hex ID from the URL (add dashes to make UUID format).
-# If empty string or None, s15 skips Notion publishing entirely.
+# If empty string or None, s12 skips Notion publishing entirely.
 NOTION_PARENT_PAGE_ID = os.environ.get(
     "NOTION_PARENT_PAGE_ID", "30a845c1-6a83-81d8-9a22-f2360c6b1093"
 )
 
 # ── LLM config ──────────────────────────────────────────────────────────────
 
-# Which Claude model to use for all LLM sub-agent calls (s2, s9, s10, s14).
-# Passed to the `claude` CLI via --model flag. Override via env var LLM_MODEL.
-# Options:
-#   "claude-opus-4-6"               — highest quality (default)
-#   "claude-sonnet-4-5-20250929"    — faster, cheaper, slightly lower quality
-#   "claude-haiku-4-5-20251001"     — 3x faster, cheapest, lower quality
-LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20250929")
+# Which Claude model to use for all LLM sub-agent calls (s2, s9, s10, s13, s14).
+# Passed to the `claude` CLI via --model flag.
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-opus-4-6")
 
-# Max output tokens per LLM call. 4096 is plenty for report sections.
-# The featured section (s9) is the longest output — typically 1500-2500 tokens.
-# Bump to 8192 if you see truncated outputs.
-LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
+# Max output tokens for the claude CLI subprocess. Set via the
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS env var in llm.py's subprocess env.
+# Official CLI maximum is 64,000 tokens. We max it out to avoid truncation —
+# the s13 report shaper can produce long reports (3,000-8,000 tokens).
+# Note: this reduces the effective context window before auto-compaction.
+LLM_MAX_OUTPUT_TOKENS = 64000
 
-# Temperature for LLM generation. Lower = more deterministic / factual.
-# 0.0–0.3 is good for structured extraction (s2) and fact-checking (s14).
-# 0.3–0.7 gives more natural prose for report writing (s9, s10).
-# We use a single value for all steps — 0.3 is a safe middle ground.
-# Note: not used by the claude CLI backend (no temperature flag available).
-LLM_TEMPERATURE = 0.3
-
-# Max agentic turns the claude CLI can take per call. The CLI may use tool
-# calls (reading files, etc.) before responding, each counting as a turn.
-# 1 is too few — structured prompts often need 2-3 turns. 4 gives headroom
-# without letting it spiral. Increase if you see "Reached max turns" errors.
-LLM_MAX_TURNS = int(os.environ.get("LLM_MAX_TURNS", "4"))
+# Timeout for LLM sessions with MCP tool access (seconds).
+# Text-only LLM: 300s hardcoded in _call_llm(). With tools: same 300s default.
+LLM_TOOL_TIMEOUT = int(os.environ.get("LLM_TOOL_TIMEOUT", "300"))
 
 # ── Timeouts per step (seconds) ─────────────────────────────────────────────
 # Used as future.result(timeout=) in ThreadPoolExecutor. If a step exceeds its
-# timeout, the future raises TimeoutError and the pipeline moves on (graceful
-# degradation — the step's output is missing but the report still generates).
+# timeout, the future raises TimeoutError and the pipeline hard-fails (no
+# fallbacks — the crash handler persists partial state and marks run as failed).
 #
 # Gotcha: the s6 timeout covers the buyer_chat async polling window. The actual
 # HTTP polling happens inside tools.buyer_chat() with its own BUYER_CHAT_MAX_WAIT.
@@ -71,17 +60,18 @@ LLM_MAX_TURNS = int(os.environ.get("LLM_MAX_TURNS", "4"))
 # BUYER_CHAT_MAX_WAIT to avoid double-timeout races.
 
 TIMEOUTS = {
-    "s3a": 20,      # opportunity_search (primary keywords) — typically 3-8s
-    "s3b": 20,      # opportunity_search (alternate keywords) — typically 3-8s
-    "s3c": 20,      # buyer_search (type + state filters) — typically 2-5s
-    "s6": 90,       # buyer_chat async polling: 10-60s typical, 90s safety net
-    "s7": 20,       # buyer_profile + buyer_contacts per secondary — typically 3-5s each
-    "s8": 20,       # exec summary (template, no API call) — effectively instant
-    "s9": 30,       # featured section LLM generation — typically 5-15s
-    "s10": 25,      # secondary cards LLM generation — typically 5-10s
-    "s11": 20,      # CTA section (template, no API call) — effectively instant
-    "s14": 30,      # validation: deterministic checks + LLM fact-check — 5-15s
-    "s15": 15,      # Notion publish via Datagen MCP — typically 2-5s
+    "s3a": 300,     # opportunity_search (primary keywords) — typically 3-8s
+    "s3b": 300,     # opportunity_search (alternate keywords) — typically 3-8s
+    "s3c": 300,     # buyer_search (buyer_types filter) — typically 2-5s
+    "s3d": 300,     # buyer_search (geographic filter) — typically 2-5s
+    "s6": 330,      # buyer_chat async polling + s9 LLM: up to 300s chat + 30s margin
+    "s7": 300,      # buyer_profile + buyer_contacts per secondary — typically 3-5s each
+    "s8": 300,      # exec summary (template, no API call) — effectively instant
+    "s9": 300,      # featured section LLM generation — typically 5-15s
+    "s10": 300,     # secondary cards LLM generation — typically 5-10s
+    "s11": 300,     # CTA section (template, no API call) — effectively instant
+    "s12": 300,     # LLM shape + Notion publish — MCP connection + tool call
+    "s13": 300,     # validation: deterministic checks + LLM fact-check — 5-15s
 }
 
 # ── Opportunity search ───────────────────────────────────────────────────────
@@ -165,6 +155,19 @@ AI_VALIDATION_SOURCE_LIMIT = 2000
 AI_CONTACTS_MAX = 20
 AI_OPPS_MAX = 15
 
+# ── Report assembly (s12) ──────────────────────────────────────────────────
+# Context limits for section generators (s9, s10) that produce content from
+# raw source data. s12 assembles these sections into the final report.
+
+# Max opportunities passed to the report shaper (before char truncation).
+AI_REPORT_OPPS_MAX = 20
+
+# Character limit for opportunity signals passed to the shaper.
+AI_REPORT_OPPS_CHAR_LIMIT = 6000
+
+# Character limit for each pre-generated section (exec summary, CTA) reference.
+AI_REPORT_SECTION_CHAR_LIMIT = 3000
+
 # ── Secondary buyers ─────────────────────────────────────────────────────────
 
 # How many secondary buyer cards to include in the report (after featured).
@@ -174,17 +177,30 @@ AI_OPPS_MAX = 15
 # buyers 5+ are diminishing returns.
 MAX_SECONDARY_BUYERS = 4
 
+# ── Concurrent pipeline runs ──────────────────────────────────────────────────
+# Max pipelines executing simultaneously. Each run uses 3-5 API threads
+# internally, so 3 concurrent runs ≈ 15 concurrent Datagen calls at peak.
+# Batch uploads queue beyond this limit (semaphore-gated).
+MAX_CONCURRENT_RUNS = int(os.environ.get("MAX_CONCURRENT_RUNS", "3"))
+
+# ── Prior-run deduplication ──────────────────────────────────────────────────
+# When enabled (default), s1 loads completed runs for the same domain and s2
+# passes them to the LLM so it diversifies keywords, buyer segments, and
+# geographic focus to avoid repeating the same analysis. When disabled, every
+# run for a domain starts fresh with no awareness of prior outcomes.
+ENABLE_PRIOR_RUN_DEDUP = True
+
 # ── Thread pool sizes ────────────────────────────────────────────────────────
 # ThreadPoolExecutor max_workers for each parallel phase.
 # These are I/O-bound (API calls), not CPU-bound, so higher counts are fine.
 # Gotcha: Datagen custom tool endpoints may rate-limit above 10 concurrent
 # requests. Keep individual pool sizes under 5 to stay safe.
 
-# Phase IV: s3a + s3b + s3c run in parallel. Always 3 — one per search type.
-MAX_WORKERS_DISCOVERY = 3
+# Phase IV: s3a + s3b + s3c + s3d run in parallel. One per search type.
+MAX_WORKERS_DISCOVERY = 4
 
-# Phase VI: 5 parallel branches (s8, s6→s9, s7→s10, s11, s12).
-MAX_WORKERS_ENRICHMENT = 5
+# Phase VI: 4 parallel branches (s8, s6→s9, s7→s10, s11).
+MAX_WORKERS_ENRICHMENT = 4
 
 # s6 internal: buyer_profile + buyer_contacts + buyer_chat in parallel.
 MAX_WORKERS_FEATURED = 3
@@ -209,11 +225,11 @@ ASYNC_POLL_INTERVAL = 3
 ASYNC_DEFAULT_MAX_WAIT = 120
 
 # Max wait specifically for buyer_chat (seconds). Set lower than the s6
-# timeout (90s) so that buyer_chat gives up cleanly before the future
-# times out. 60s covers ~95% of responses. Some complex buyers (large
-# districts, agencies with lots of data) can take 60-90s — those will
-# timeout and the report generates without AI context (graceful degradation).
-BUYER_CHAT_MAX_WAIT = 60
+# timeout (330s) so that buyer_chat gives up cleanly before the future
+# times out. Complex buyers (large districts, agencies with lots of data)
+# can take 60-90s+. If this fires, the pipeline hard-fails — there is no
+# graceful degradation. All partial state is persisted to SQLite.
+BUYER_CHAT_MAX_WAIT = 300
 
 # ── CTA copy (Starbridge marketing numbers) ─────────────────────────────────
 # These appear in the "What Starbridge Can Do" section of every report.
@@ -277,3 +293,127 @@ STATE_CODES = {
     "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV",
     "wisconsin": "WI", "wyoming": "WY", "district of columbia": "DC",
 }
+
+# ── Config metadata (used by GET /api/config) ─────────────────────────────
+# Categories and descriptions for the pipeline explorer config panel.
+# Only tunables are included — reference data (STATE_CODES, BUYER_TYPE_*)
+# and paths (DB_PATH) are excluded.
+
+CONFIG_METADATA = {
+    "LLM_MODEL":                    {"cat": "LLM",           "type": "str",  "desc": "Claude model for all LLM sub-agents"},
+    "LLM_MAX_OUTPUT_TOKENS":        {"cat": "LLM",           "type": "int",  "desc": "Max output tokens for CLI subprocess"},
+    "LLM_TOOL_TIMEOUT":             {"cat": "LLM",           "type": "int",  "desc": "Timeout for MCP tool sessions (seconds)", "unit": "s"},
+    "TIMEOUTS":                     {"cat": "Timeouts",      "type": "dict", "desc": "Per-step timeout seconds"},
+    "OPPORTUNITY_PAGE_SIZE":        {"cat": "Search",        "type": "int",  "desc": "Results per opportunity search call"},
+    "OPPORTUNITY_SORT_FIELD":       {"cat": "Search",        "type": "str",  "desc": "Sort order for opportunity results"},
+    "BUYER_SEARCH_PAGE_SIZE":       {"cat": "Search",        "type": "int",  "desc": "Results per buyer search call"},
+    "FEATURED_CONTACT_PAGE_SIZE":   {"cat": "Contacts",      "type": "int",  "desc": "Contacts fetched for featured buyer"},
+    "SECONDARY_CONTACT_PAGE_SIZE":  {"cat": "Contacts",      "type": "int",  "desc": "Contacts fetched per secondary buyer"},
+    "AI_PROFILE_CHAR_LIMIT":        {"cat": "LLM Limits",    "type": "int",  "desc": "Profile JSON char limit for s9"},
+    "AI_CONTACTS_CHAR_LIMIT":       {"cat": "LLM Limits",    "type": "int",  "desc": "Contacts JSON char limit for s9"},
+    "AI_OPPS_CHAR_LIMIT":           {"cat": "LLM Limits",    "type": "int",  "desc": "Opportunities JSON char limit for s9"},
+    "AI_CONTEXT_CHAR_LIMIT":        {"cat": "LLM Limits",    "type": "int",  "desc": "AI context char limit for s9"},
+    "AI_VALIDATION_SOURCE_LIMIT":   {"cat": "LLM Limits",    "type": "int",  "desc": "Source data char limit for s13 fact-check"},
+    "AI_CONTACTS_MAX":              {"cat": "LLM Limits",    "type": "int",  "desc": "Max contacts passed to LLM"},
+    "AI_OPPS_MAX":                  {"cat": "LLM Limits",    "type": "int",  "desc": "Max opportunities passed to LLM"},
+    "AI_REPORT_OPPS_MAX":           {"cat": "LLM Limits",    "type": "int",  "desc": "Max opps for report shaper (s12)"},
+    "AI_REPORT_OPPS_CHAR_LIMIT":    {"cat": "LLM Limits",    "type": "int",  "desc": "Opp signals char limit for shaper"},
+    "AI_REPORT_SECTION_CHAR_LIMIT": {"cat": "LLM Limits",    "type": "int",  "desc": "Section reference char limit"},
+    "MAX_SECONDARY_BUYERS":         {"cat": "Pipeline",      "type": "int",  "desc": "Secondary buyer cards in report"},
+    "MAX_CONCURRENT_RUNS":          {"cat": "Pipeline",      "type": "int",  "desc": "Max simultaneous pipeline runs"},
+    "ENABLE_PRIOR_RUN_DEDUP":       {"cat": "Pipeline",      "type": "bool", "desc": "Diversify keywords across runs for same domain"},
+    "MAX_WORKERS_DISCOVERY":        {"cat": "Thread Pools",  "type": "int",  "desc": "Phase IV pool size"},
+    "MAX_WORKERS_ENRICHMENT":       {"cat": "Thread Pools",  "type": "int",  "desc": "Phase VI pool size"},
+    "MAX_WORKERS_FEATURED":         {"cat": "Thread Pools",  "type": "int",  "desc": "s6 internal pool size"},
+    "MAX_WORKERS_SECONDARY":        {"cat": "Thread Pools",  "type": "int",  "desc": "s7 per-buyer pool size"},
+    "ASYNC_POLL_INTERVAL":          {"cat": "Async Polling", "type": "int",  "desc": "Seconds between poll requests", "unit": "s"},
+    "ASYNC_DEFAULT_MAX_WAIT":       {"cat": "Async Polling", "type": "int",  "desc": "Default async tool max wait", "unit": "s"},
+    "BUYER_CHAT_MAX_WAIT":          {"cat": "Async Polling", "type": "int",  "desc": "buyer_chat async max wait", "unit": "s"},
+    "CTA_BUYERS_COUNT":             {"cat": "CTA Copy",      "type": "str",  "desc": "Total SLED buyers (marketing number)"},
+    "CTA_RECORDS_COUNT":            {"cat": "CTA Copy",      "type": "str",  "desc": "Total indexed records (marketing number)"},
+    "NOTION_PARENT_PAGE_ID":        {"cat": "External",      "type": "str",  "desc": "Notion parent page for published reports"},
+}
+
+
+def get_config_snapshot():
+    """Return all tunable config values for the API. Reads live module state."""
+    import copy
+    g = globals()
+    return {key: copy.deepcopy(g[key]) for key in CONFIG_METADATA if key in g}
+
+
+# Factory defaults — captured once at module load. Used by reset_config().
+import copy as _copy
+_FACTORY_DEFAULTS = {
+    key: _copy.deepcopy(val)
+    for key, val in ((k, globals().get(k)) for k in CONFIG_METADATA)
+    if val is not None
+}
+
+
+def reset_config():
+    """Reset all tunable config values to factory defaults (as defined in source).
+
+    Returns the restored snapshot. Like set_config_value, this only updates
+    module globals — call apply_config_to_modules() to push to pipeline/tools/llm.
+    """
+    import copy
+    g = globals()
+    for key, val in _FACTORY_DEFAULTS.items():
+        g[key] = copy.deepcopy(val)
+    return get_config_snapshot()
+
+
+def set_config_value(key: str, value):
+    """Set a single config value at runtime. Returns (ok, error_msg).
+
+    Validates the key exists in CONFIG_METADATA and coerces the value to
+    the declared type. Changes are held in this module's globals until
+    apply_config_to_modules() pushes them into the pipeline/tools/llm modules.
+    """
+    if key not in CONFIG_METADATA:
+        return False, f"Unknown config key: {key}"
+
+    meta = CONFIG_METADATA[key]
+    declared_type = meta["type"]
+
+    try:
+        if declared_type == "int":
+            value = int(value)
+        elif declared_type == "str":
+            value = str(value)
+        elif declared_type == "bool":
+            if isinstance(value, str):
+                value = value.lower() in ("true", "1", "yes")
+            else:
+                value = bool(value)
+        elif declared_type == "dict":
+            if not isinstance(value, dict):
+                return False, f"{key} requires a dict value"
+            value = {k: int(v) for k, v in value.items()}
+    except (ValueError, TypeError) as e:
+        return False, f"Invalid value for {key}: {e}"
+
+    globals()[key] = value
+    return True, None
+
+
+def apply_config_to_modules(snapshot=None):
+    """Push config values into pipeline.py / tools.py / llm.py cached bindings.
+
+    These modules use `from .config import X` which creates module-level copies.
+    Changing config globals alone doesn't update those copies — this function
+    monkey-patches them so the next run_pipeline() call sees the new values.
+
+    If snapshot is None, reads current config globals.
+    """
+    if snapshot is None:
+        snapshot = get_config_snapshot()
+
+    import agent.pipeline as p
+    import agent.tools as t
+    import agent.llm as l
+    for key, val in snapshot.items():
+        for mod in (p, t, l):
+            if hasattr(mod, key):
+                setattr(mod, key, val)

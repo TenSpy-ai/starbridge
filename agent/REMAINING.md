@@ -6,10 +6,10 @@ What's built, what's not, and what's needed to go from "works locally" to "produ
 
 | Component | Status | Evidence |
 |---|---|---|
-| 19-step pipeline orchestrator | **Complete** | `pipeline.py` — 1,186 LOC |
-| 5 LLM sub-agents (strategy, buyer profile summary, featured, secondary, fact-check) | **Complete** | `llm.py` — Claude CLI backend |
+| 17-step pipeline orchestrator | **Complete** | `pipeline.py` — 7 phases, parallel execution, LLM-driven Notion publish |
+| 7 LLM sub-agents (strategy, featured, secondary, report shaper+publisher, text-only shaper, fact-check, Q&A) | **Complete** | `llm.py` — Claude CLI backend |
+| LLM-driven report assembly + Notion publish (s12) | **Complete** | Pre-generated sections (s8/s9/s10/s11) → assembled report + Notion page via MCP tools. |
 | 5 Starbridge custom tool integrations | **Complete** | `tools.py` — sync + async REST |
-| Notion MCP publish | **Complete** | `tools.py` — Datagen SDK |
 | Deterministic buyer scoring (6-factor) | **Complete** | `pipeline.py` s4 |
 | SQLite persistence (4 tables) | **Complete** | `db.py` — runs, discoveries, contacts, audit_log |
 | State preservation on failure | **Complete** | Run stub at s1, partial save on crash, run marked 'failed' |
@@ -34,8 +34,8 @@ What's built, what's not, and what's needed to go from "works locally" to "produ
 **Effort**: Deployment configuration — Jeremy handling this directly.
 
 #### 2. Completion Webhook → Clay → Slack
-**What**: When the pipeline finishes (s16), push a webhook to Clay with the Notion URL + run metadata. Clay handles Slack dispatch to `#intent-reports`.
-**Status**: Not yet built. Will be added as a new pipeline step (after s16 or as part of s16).
+**What**: When the pipeline finishes (s14), push a webhook to Clay with the Notion URL + run metadata. Clay handles Slack dispatch to `#intent-reports`.
+**Status**: Not yet built. Will be added as a new pipeline step (after s14 or as part of s14).
 **Design**: Pipeline POSTs a completion webhook to Clay. Clay formats and routes to Slack — keeps Slack ownership in Clay where it already lives. Same pattern for failure alerts (#3 below).
 **Effort**: ~1h for the pipeline webhook step. Clay-side routing is separate.
 
@@ -54,6 +54,7 @@ What's built, what's not, and what's needed to go from "works locally" to "produ
 
 #### 5. Error Recovery + Retry Logic
 **What**: When the pipeline fails partway (e.g., Starbridge API timeout), the run is saved as 'failed' with partial state. Currently there's no way to retry from where it left off.
+**Note**: More important now — the pipeline has zero fallbacks. Any API timeout, LLM failure, or DB error hard-fails the run. Retry logic is the safety net.
 **Options**:
 - **a) Full retry** — Simple: re-run the entire pipeline for the same domain. Cached discoveries (from prior runs) speed up s1, but all API calls are repeated.
 - **b) Partial retry from checkpoint** — More complex: deserialize the partial state from SQLite and resume from the failed step. Requires a `resume_pipeline(run_id)` function.
@@ -75,7 +76,7 @@ What's built, what's not, and what's needed to go from "works locally" to "produ
 #### 7. Report Branding
 **What**: The current Notion reports are plain markdown. V2 target is branded landing pages (Notion → Super.so or Webflow).
 **Gap**: Nastia (Design Lead) hasn't delivered the branding yet. Current reports are functional but not branded.
-**Effort**: Depends on design delivery. Implementing the branding in the template sections (s8, s11, s12) is 1-2 hours once the design exists.
+**Effort**: Depends on design delivery. Implementing the branding in the template sections (s8, s11) is 1-2 hours once the design exists.
 **Dependency**: Nastia.
 
 #### 8. DM Contact Card (Tier 2)
@@ -84,7 +85,7 @@ What's built, what's not, and what's needed to go from "works locally" to "produ
 **Dependency**: Starbridge API access (Yurii). V2 scope.
 
 #### 9. Multi-Signal Campaigns
-**What**: Different campaigns target different signals. The pipeline currently takes one `campaign_signal` — it doesn't handle Kushagra's multi-signal allocation framework.
+**What**: Different campaigns target different signals. The pipeline doesn't handle Kushagra's multi-signal allocation framework.
 **Gap**: V1 handles single-signal campaigns. Multi-signal requires knowing which signal in the sequence triggered the reply.
 **Effort**: 2-4 hours to add signal-sequence awareness. Depends on Smartlead webhook carrying the sequence/email number.
 

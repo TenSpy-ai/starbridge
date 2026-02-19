@@ -1,15 +1,15 @@
-"""Intel brief pipeline — 19 steps from webhook to published Notion report.
+"""Intel brief pipeline — 18 steps from webhook to published Notion report.
 
-LLM calls (s2, s9, s10, s14) go through agent.llm sub-agents.
+LLM calls (s2, s9, s10, s12, s13) go through agent.llm sub-agents.
+s12 uses MCP tool access to shape the report AND publish to Notion in one session.
 Starbridge tool calls (s3a, s3b, s3c, s6=profile+contacts+chat, s7×N) go through agent.tools.
-1 Notion call, rest is Python logic/templates.
 """
 
 import json
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from . import llm, tools
@@ -20,12 +20,12 @@ from .config import (
     AI_OPPS_CHAR_LIMIT,
     AI_OPPS_MAX,
     AI_PROFILE_CHAR_LIMIT,
-    AI_VALIDATION_SOURCE_LIMIT,
+    AI_REPORT_SECTION_CHAR_LIMIT,
     BUYER_SEARCH_PAGE_SIZE,
-    BUYER_TYPE_EMOJI,
     BUYER_TYPE_LABEL,
     CTA_BUYERS_COUNT,
     CTA_RECORDS_COUNT,
+    ENABLE_PRIOR_RUN_DEDUP,
     FEATURED_CONTACT_PAGE_SIZE,
     MAX_SECONDARY_BUYERS,
     MAX_WORKERS_DISCOVERY,
@@ -45,15 +45,57 @@ from .db import (
     insert_discoveries,
     insert_run,
     insert_run_stub,
-    load_existing_insights,
     load_prior_runs,
     log_step,
+    update_run_cancelled,
     update_run_completed,
     update_run_discovery,
     update_run_failed,
 )
 
 logger = logging.getLogger("pipeline")
+
+# Short stop words filtered out when extracting keywords from ideal_buyer_profile
+_STOP_WORDS = frozenset({
+    "with", "that", "this", "from", "their", "which", "have", "been",
+    "will", "would", "could", "should", "about", "into", "over", "under",
+    "between", "through", "after", "before", "during", "without", "within",
+    "along", "across", "against", "toward", "upon", "need", "needing",
+    "seeking", "looking", "using", "based", "large", "small",
+})
+
+
+class PipelineCancelled(Exception):
+    """Raised when the pipeline is killed by the user."""
+    pass
+
+
+def _summarize_output(data, max_str=10000, max_items=10):
+    """Summarize a step output dict for audit_log metadata.
+
+    Preserves full content for UI display. Only truncates extremely large
+    strings (>10K chars) and caps list samples at 10 items.
+    """
+    if not isinstance(data, dict):
+        return data
+    out = {}
+    for k, v in data.items():
+        if isinstance(v, str):
+            out[k] = v[:max_str] + f"... ({len(v)} chars)" if len(v) > max_str else v
+        elif isinstance(v, list):
+            sample = v[:max_items]
+            cleaned = []
+            for item in sample:
+                if isinstance(item, dict):
+                    cleaned.append({ik: (iv[:500] + "..." if isinstance(iv, str) and len(iv) > 500 else iv) for ik, iv in list(item.items())[:15]})
+                else:
+                    cleaned.append(item)
+            out[k] = {"_count": len(v), "_sample": cleaned}
+        elif isinstance(v, dict):
+            out[k] = {ik: (iv[:500] + "..." if isinstance(iv, str) and len(iv) > 500 else iv) for ik, iv in list(v.items())[:20]}
+        else:
+            out[k] = v
+    return out
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -98,11 +140,10 @@ def s0_parse_webhook(webhook: dict) -> dict:
         "target_company": webhook.get("target_company", ""),
         "target_domain": webhook.get("target_domain", ""),
         "product_description": webhook.get("product_description", ""),
-        "campaign_signal": webhook.get("campaign_signal", ""),
         "campaign_id": webhook.get("campaign_id", ""),
         "prospect_name": webhook.get("prospect_name", ""),
         "prospect_email": webhook.get("prospect_email", ""),
-        "tier": int(webhook.get("tier", 1)),
+        "tier": webhook.get("tier", ""),
         "_start_time": time.time(),
     }
     logger.info(f"  target: {state['target_company']} ({state['target_domain']})")
@@ -123,15 +164,22 @@ def s1_validate_and_load(state: dict) -> dict:
 
     # Create a run stub immediately so all subsequent steps have a run_id
     # for audit logging. Discovery data is backfilled in s5.
-    run_id = insert_run_stub(state)
-    logger.info(f"  run_id={run_id} (stub created)")
+    # If DB_RUN_ID is pre-assigned (batch mode), skip stub creation.
+    if state.get("DB_RUN_ID"):
+        run_id = state["DB_RUN_ID"]
+        logger.info(f"  run_id={run_id} (pre-assigned)")
+    else:
+        run_id = insert_run_stub(state)
+        logger.info(f"  run_id={run_id} (stub created)")
 
-    prior_runs = load_prior_runs(domain) if domain else []
-    existing = load_existing_insights(domain) if domain else []
+    if ENABLE_PRIOR_RUN_DEDUP and domain:
+        prior_runs = load_prior_runs(domain)
+    else:
+        prior_runs = []
 
-    logger.info(f"  prior runs: {len(prior_runs)}, cached discoveries: {len(existing)}")
+    logger.info(f"  prior runs: {len(prior_runs)} (dedup={'on' if ENABLE_PRIOR_RUN_DEDUP else 'off'})")
     # Duration is added retroactively by the orchestrator
-    return {"PRIOR_RUNS": prior_runs, "EXISTING_INSIGHTS": existing, "DB_RUN_ID": run_id}
+    return {"PRIOR_RUNS": prior_runs, "DB_RUN_ID": run_id}
 
 
 # ── Phase III: ANALYZE ──────────────────────────────────────────────────────
@@ -143,29 +191,14 @@ def s2_search_strategy(state: dict) -> dict:
     run_id = state.get("DB_RUN_ID")
 
     with StepTimer(run_id, "s2_search_strategy") as t:
-        try:
-            strategy = llm.search_strategy(
-                target_company=state["target_company"],
-                target_domain=state["target_domain"],
-                product_description=state["product_description"],
-                campaign_signal=state["campaign_signal"],
-                prior_run_count=len(state.get("PRIOR_RUNS", [])),
-            )
-            t.message = f"kw={strategy['primary_keywords']}, types={strategy.get('opportunity_types', [])}"
-        except Exception as e:
-            logger.error(f"  LLM failed: {e}")
-            t.status = "failure"
-            t.message = str(e)
-            fallback_kw = state["campaign_signal"] or state["target_company"]
-            strategy = {
-                "primary_keywords": [fallback_kw],
-                "alternate_keywords": [],
-                "buyer_types": [],
-                "opportunity_types": ["Meeting", "Purchase", "RFP", "Contract"],
-                "sled_segments": [],
-                "geographic_hints": [],
-                "ideal_buyer_profile": state["product_description"][:200],
-            }
+        strategy = llm.search_strategy(
+            target_company=state["target_company"],
+            target_domain=state["target_domain"],
+            product_description=state["product_description"],
+            prior_runs=state.get("PRIOR_RUNS", []),
+        )
+        t.message = f"kw={strategy['primary_keywords']}, types={strategy.get('opportunity_types', [])}"
+        t.metadata = _summarize_output({"SEARCH_STRATEGY": strategy})
 
     logger.info(f"  primary kw: {strategy['primary_keywords']}")
     logger.info(f"  alternate kw: {strategy['alternate_keywords']}")
@@ -179,73 +212,102 @@ def s2_search_strategy(state: dict) -> dict:
 
 def s3a_primary_search(state: dict) -> dict:
     """s3a — opportunity_search with primary keywords."""
-    kw = " ".join(state["SEARCH_STRATEGY"].get("primary_keywords", []))
+    primary = state["SEARCH_STRATEGY"].get("primary_keywords", [])
+    meeting = state["SEARCH_STRATEGY"].get("meeting_keywords", [])
+    kw = " ".join(primary + meeting)
     opp_types = state["SEARCH_STRATEGY"].get("opportunity_types", [])
-    logger.info(f"[s3a] Opportunity search (primary): '{kw}' types={opp_types}")
+    logger.info(f"[s3a] Opportunity search (primary+meeting): '{kw}' types={opp_types}")
 
     run_id = state.get("DB_RUN_ID")
 
     with StepTimer(run_id, "s3a_primary_search") as t:
-        try:
-            raw = tools.opportunity_search(
-                search_query=kw,
-                types=opp_types,
-                page_size=OPPORTUNITY_PAGE_SIZE,
-            )
-            opps = _opps_list(raw)
-            t.message = f"{len(opps)} results"
-            logger.info(f"  → {len(opps)} results")
-        except Exception as e:
-            logger.error(f"  s3a failed: {e}")
-            t.status = "failure"
-            t.message = str(e)
-            opps = []
+        raw = tools.opportunity_search(
+            search_query=kw,
+            types=opp_types,
+            page_size=OPPORTUNITY_PAGE_SIZE,
+        )
+        opps = _opps_list(raw)
+        t.message = f"{len(opps)} results"
+        t.metadata = _summarize_output({"DISCOVERY_SIGNALS_A": opps})
+        logger.info(f"  → {len(opps)} results")
 
     return {"DISCOVERY_SIGNALS_A": opps}
 
 
 def s3b_alternate_search(state: dict) -> dict:
     """s3b — opportunity_search with alternate keywords."""
-    kw = " ".join(state["SEARCH_STRATEGY"].get("alternate_keywords", []))
+    alternate = state["SEARCH_STRATEGY"].get("alternate_keywords", [])
+    rfp = state["SEARCH_STRATEGY"].get("rfp_keywords", [])
+    kw = " ".join(alternate + rfp)
     if not kw.strip():
-        logger.info("[s3b] No alternate keywords, skipping")
+        logger.info("[s3b] No alternate/rfp keywords, skipping")
         log_step(state.get("DB_RUN_ID"), "s3b_alternate_search", "skipped",
-                 "No alternate keywords", duration=0)
+                 "No alternate/rfp keywords", duration=0)
         return {"DISCOVERY_SIGNALS_B": []}
 
     opp_types = state["SEARCH_STRATEGY"].get("opportunity_types", [])
-    logger.info(f"[s3b] Opportunity search (alternate): '{kw}' types={opp_types}")
+    logger.info(f"[s3b] Opportunity search (alternate+rfp): '{kw}' types={opp_types}")
 
     run_id = state.get("DB_RUN_ID")
 
     with StepTimer(run_id, "s3b_alternate_search") as t:
-        try:
-            raw = tools.opportunity_search(
-                search_query=kw,
-                types=opp_types,
-                page_size=OPPORTUNITY_PAGE_SIZE,
-            )
-            opps = _opps_list(raw)
-            t.message = f"{len(opps)} results"
-            logger.info(f"  → {len(opps)} results")
-        except Exception as e:
-            logger.error(f"  s3b failed: {e}")
-            t.status = "failure"
-            t.message = str(e)
-            opps = []
+        raw = tools.opportunity_search(
+            search_query=kw,
+            types=opp_types,
+            page_size=OPPORTUNITY_PAGE_SIZE,
+        )
+        opps = _opps_list(raw)
+        t.message = f"{len(opps)} results"
+        t.metadata = _summarize_output({"DISCOVERY_SIGNALS_B": opps})
+        logger.info(f"  → {len(opps)} results")
 
     return {"DISCOVERY_SIGNALS_B": opps}
 
 
-def s3c_buyer_search(state: dict) -> dict:
-    """s3c — buyer_search by type + geographic hints.
+def s3c_buyer_type_search(state: dict) -> dict:
+    """s3c — buyer_search by buyer_types filter only.
 
-    buyer_search 'query' is a Name Contains filter (not keyword search),
-    so we skip it and rely on buyer_types + states filters to surface
-    relevant buyers that may not appear in opportunity results.
+    Searches for buyers matching the LLM-selected buyer types (e.g.
+    SchoolDistrict, City). Runs in parallel with s3d (geographic search).
     """
     strategy = state["SEARCH_STRATEGY"]
     buyer_types = strategy.get("buyer_types", [])
+
+    if not buyer_types:
+        logger.info("[s3c] No buyer types — skipping")
+        log_step(state.get("DB_RUN_ID"), "s3c_buyer_type_search", "skipped",
+                 "No buyer types in strategy", duration=0)
+        return {"DISCOVERY_BUYERS_C": []}
+
+    # Extract first significant keyword from ideal_buyer_profile for name-contains filter
+    profile = strategy.get("ideal_buyer_profile", "")
+    profile_words = [w for w in profile.split() if len(w) > 3 and w.lower() not in _STOP_WORDS]
+    query = profile_words[0] if profile_words else None
+
+    logger.info(f"[s3c] Buyer type search: types={buyer_types} query={query}")
+    run_id = state.get("DB_RUN_ID")
+
+    with StepTimer(run_id, "s3c_buyer_type_search") as t:
+        raw = tools.buyer_search(
+            query=query,
+            buyer_types=buyer_types,
+            page_size=BUYER_SEARCH_PAGE_SIZE,
+        )
+        buyers = _buyers_list(raw)
+        t.message = f"{len(buyers)} buyers"
+        t.metadata = _summarize_output({"DISCOVERY_BUYERS_C": buyers})
+        logger.info(f"  → {len(buyers)} buyers")
+
+    return {"DISCOVERY_BUYERS_C": buyers}
+
+
+def s3d_buyer_geo_search(state: dict) -> dict:
+    """s3d — buyer_search by geographic hints (state codes) only.
+
+    Searches for buyers in the LLM-identified geographic regions.
+    Runs in parallel with s3c (buyer type search).
+    """
+    strategy = state["SEARCH_STRATEGY"]
     geo = strategy.get("geographic_hints", [])
 
     state_codes = []
@@ -258,33 +320,26 @@ def s3c_buyer_search(state: dict) -> dict:
             if code:
                 state_codes.append(code)
 
-    if not buyer_types and not state_codes:
-        logger.info("[s3c] No buyer types or geo hints — skipping buyer search")
-        log_step(state.get("DB_RUN_ID"), "s3c_buyer_search", "skipped",
-                 "No buyer types or geo hints", duration=0)
-        return {"DISCOVERY_BUYERS": []}
+    if not state_codes:
+        logger.info("[s3d] No geographic hints — skipping")
+        log_step(state.get("DB_RUN_ID"), "s3d_buyer_geo_search", "skipped",
+                 "No geographic hints in strategy", duration=0)
+        return {"DISCOVERY_BUYERS_D": []}
 
-    logger.info(f"[s3c] Buyer search: types={buyer_types}, states={state_codes}")
-
+    logger.info(f"[s3d] Buyer geo search: states={state_codes}")
     run_id = state.get("DB_RUN_ID")
 
-    with StepTimer(run_id, "s3c_buyer_search") as t:
-        try:
-            raw = tools.buyer_search(
-                buyer_types=buyer_types or None,
-                states=state_codes if state_codes else None,
-                page_size=BUYER_SEARCH_PAGE_SIZE,
-            )
-            buyers = _buyers_list(raw)
-            t.message = f"{len(buyers)} buyers"
-            logger.info(f"  → {len(buyers)} buyers")
-        except Exception as e:
-            logger.error(f"  s3c failed: {e}")
-            t.status = "failure"
-            t.message = str(e)
-            buyers = []
+    with StepTimer(run_id, "s3d_buyer_geo_search") as t:
+        raw = tools.buyer_search(
+            states=state_codes,
+            page_size=BUYER_SEARCH_PAGE_SIZE,
+        )
+        buyers = _buyers_list(raw)
+        t.message = f"{len(buyers)} buyers"
+        t.metadata = _summarize_output({"DISCOVERY_BUYERS_D": buyers})
+        logger.info(f"  → {len(buyers)} buyers")
 
-    return {"DISCOVERY_BUYERS": buyers}
+    return {"DISCOVERY_BUYERS_D": buyers}
 
 
 # ── Phase V: SELECT ─────────────────────────────────────────────────────────
@@ -296,7 +351,9 @@ def s4_rank_and_select(state: dict) -> dict:
 
     opps_a = state.get("DISCOVERY_SIGNALS_A") or []
     opps_b = state.get("DISCOVERY_SIGNALS_B") or []
-    direct_buyers = state.get("DISCOVERY_BUYERS") or []
+    buyers_c = state.get("DISCOVERY_BUYERS_C") or []
+    buyers_d = state.get("DISCOVERY_BUYERS_D") or []
+    direct_buyers = buyers_c + buyers_d
     all_opps = opps_a + opps_b
 
     # ── Build buyer → signals map from opportunity results ──
@@ -311,7 +368,7 @@ def s4_rank_and_select(state: dict) -> dict:
             buyer_signals[bid] = {"name": bname, "type": btype, "signals": []}
         buyer_signals[bid]["signals"].append(opp)
 
-    # ── Add direct buyers from s3c (may have zero signals) ──
+    # ── Add direct buyers from s3c + s3d (may have zero signals) ──
     for b in direct_buyers:
         bid = b.get("id") or b.get("buyerId")
         if bid and bid not in buyer_signals:
@@ -326,7 +383,10 @@ def s4_rank_and_select(state: dict) -> dict:
 
     # ── Score each buyer ──
     primary_kw = state.get("SEARCH_STRATEGY", {}).get("primary_keywords", [])
+    profile = state.get("SEARCH_STRATEGY", {}).get("ideal_buyer_profile", "")
+    profile_words = [w for w in profile.split() if len(w) > 3 and w.lower() not in _STOP_WORDS]
     kw_set = set(w.lower() for kw in primary_kw for w in kw.split())
+    kw_set.update(w.lower() for w in profile_words)
     target_types = set(t.lower() for t in state.get("SEARCH_STRATEGY", {}).get("buyer_types", []))
 
     scored = []
@@ -428,7 +488,11 @@ def s4_rank_and_select(state: dict) -> dict:
     log_step(state.get("DB_RUN_ID"), "s4_rank_and_select", "success",
              f"Featured={featured['buyerName']}, {len(scored)} total buyers",
              duration=time.time() - _s4_start,
-             metadata={"featured_score": featured["score"], "total_buyers": len(scored)})
+             metadata=_summarize_output({
+                 "FEATURED": {"name": featured["buyerName"], "id": featured["buyerId"], "score": featured["score"], "signals": featured["signalCount"]},
+                 "SECONDARY_BUYERS": [{"name": s["buyerName"], "score": s["score"]} for s in secondary],
+                 "TOTAL_SCORED": len(scored),
+             }))
 
     return {
         "FEATURED_BUYER_ID": featured["buyerId"],
@@ -437,6 +501,7 @@ def s4_rank_and_select(state: dict) -> dict:
         "SECONDARY_BUYERS": secondary,
         "SELECTION_RATIONALE": rationale,
         "ALL_SCORED_BUYERS": scored,
+        "DISCOVERY_BUYERS": list({(b.get("id") or b.get("buyerId")): b for b in direct_buyers}.values()),
     }
 
 
@@ -447,23 +512,19 @@ def s5_persist_discovery(state: dict) -> dict:
 
     run_id = state.get("DB_RUN_ID")
 
-    try:
-        if run_id:
-            update_run_discovery(run_id, state)
-        else:
-            # Fallback: no stub exists (shouldn't happen, but be safe)
-            run_id = insert_run(state)
+    if run_id:
+        update_run_discovery(run_id, state)
+    else:
+        run_id = insert_run(state)
 
-        all_scored = state.get("ALL_SCORED_BUYERS", [])
-        insert_discoveries(run_id, state["target_domain"], all_scored)
-        logger.info(f"  run_id={run_id}, {len(all_scored)} discoveries saved")
-        log_step(run_id, "s5_persist_discovery", "success",
-                 f"run_id={run_id}, {len(all_scored)} discoveries",
-                 duration=time.time() - _s5_start)
-        return {"DB_RUN_ID": run_id}
-    except Exception as e:
-        logger.error(f"  SQLite persist failed (non-blocking): {e}")
-        return {"DB_RUN_ID": run_id}
+    all_scored = state.get("ALL_SCORED_BUYERS", [])
+    insert_discoveries(run_id, state["target_domain"], all_scored)
+    logger.info(f"  run_id={run_id}, {len(all_scored)} discoveries saved")
+    log_step(run_id, "s5_persist_discovery", "success",
+             f"run_id={run_id}, {len(all_scored)} discoveries",
+             duration=time.time() - _s5_start,
+             metadata={"discoveries": len(all_scored), "run_id": run_id})
+    return {"DB_RUN_ID": run_id}
 
 
 # ── Phase VI: ENRICH & GENERATE ────────────────────────────────────────────
@@ -486,15 +547,15 @@ def s6_featured_intel(state: dict) -> dict:
         f"Include specific initiative names, dollar amounts, and dates where available."
     )
 
-    profile = None
-    contacts = []
-    ai_ctx = None
-
     pool = ThreadPoolExecutor(max_workers=MAX_WORKERS_FEATURED)
     f_profile = pool.submit(tools.buyer_profile, buyer_id)
     f_contacts = pool.submit(tools.buyer_contacts, buyer_id, FEATURED_CONTACT_PAGE_SIZE)
     f_ai_chat = pool.submit(tools.buyer_chat, buyer_id, ai_question)
 
+    profile = None
+    contacts = []
+
+    _t0 = time.time()
     try:
         raw_prof = f_profile.result(timeout=TIMEOUTS.get("s7", 20))
         if isinstance(raw_prof, dict):
@@ -502,33 +563,43 @@ def s6_featured_intel(state: dict) -> dict:
         else:
             profile = raw_prof
         logger.info("  buyer_profile ✓")
-        log_step(run_id, "s6_buyer_profile", "success")
+        log_step(run_id, "s6_buyer_profile", "success", duration=time.time() - _t0,
+                 metadata=_summarize_output({"FEAT_PROFILE": profile}))
     except Exception as e:
-        logger.warning(f"  buyer_profile failed: {e}")
-        log_step(run_id, "s6_buyer_profile", "failure", str(e))
+        log_step(run_id, "s6_buyer_profile", "failure", f"{type(e).__name__}: {e}", duration=time.time() - _t0)
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
 
+    _t0 = time.time()
     try:
         raw_con = f_contacts.result(timeout=TIMEOUTS.get("s7", 20))
         contacts = _contacts_list(raw_con)
         logger.info(f"  buyer_contacts ✓ ({len(contacts)})")
-        log_step(run_id, "s6_buyer_contacts", "success", f"{len(contacts)} contacts")
+        log_step(run_id, "s6_buyer_contacts", "success", f"{len(contacts)} contacts", duration=time.time() - _t0,
+                 metadata=_summarize_output({"FEAT_CONTACTS": contacts}))
     except Exception as e:
-        logger.warning(f"  buyer_contacts failed: {e}")
-        log_step(run_id, "s6_buyer_contacts", "failure", str(e))
+        log_step(run_id, "s6_buyer_contacts", "failure", f"{type(e).__name__}: {e}", duration=time.time() - _t0)
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
 
+    _t0 = time.time()
     try:
-        raw_chat = f_ai_chat.result(timeout=TIMEOUTS.get("s6", 90))
+        raw_chat = f_ai_chat.result(timeout=TIMEOUTS.get("s6", 330))
         if isinstance(raw_chat, dict):
             ai_ctx = raw_chat.get("ai_response") or raw_chat.get("response") or raw_chat.get("answer")
             if not ai_ctx:
                 ai_ctx = json.dumps(raw_chat)
         elif raw_chat:
             ai_ctx = str(raw_chat)
+        else:
+            raise RuntimeError(f"buyer_chat returned empty response for {buyer_name}")
         logger.info(f"  buyer_chat ✓ ({len(ai_ctx or '')} chars)")
-        log_step(run_id, "s6_buyer_chat", "success", f"{len(ai_ctx or '')} chars")
+        log_step(run_id, "s6_buyer_chat", "success", f"{len(ai_ctx or '')} chars", duration=time.time() - _t0,
+                 metadata=_summarize_output({"FEAT_AI_CONTEXT": ai_ctx or ""}))
     except Exception as e:
-        logger.warning(f"  buyer_chat timed out or failed (non-blocking): {e}")
-        log_step(run_id, "s6_buyer_chat", "timeout", str(e))
+        log_step(run_id, "s6_buyer_chat", "failure", f"{type(e).__name__}: {e}", duration=time.time() - _t0)
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
 
     pool.shutdown(wait=False, cancel_futures=True)
 
@@ -536,16 +607,14 @@ def s6_featured_intel(state: dict) -> dict:
     all_opps = (state.get("DISCOVERY_SIGNALS_A") or []) + (state.get("DISCOVERY_SIGNALS_B") or [])
     opps = [o for o in all_opps if (o.get("buyerId") or o.get("buyer_id")) == buyer_id]
 
-    ai_available = bool(ai_ctx)
     logger.info(f"  profile: {'yes' if profile else 'no'}, contacts: {len(contacts)}, "
-                f"opportunities: {len(opps)}, AI: {'yes' if ai_available else 'no'}")
+                f"opportunities: {len(opps)}, AI: {'yes' if ai_ctx else 'no'}")
 
     return {
         "FEAT_PROFILE": profile,
         "FEAT_CONTACTS": contacts,
         "FEAT_OPPORTUNITIES": opps,
         "FEAT_AI_CONTEXT": ai_ctx,
-        "FEAT_AI_CONTEXT_AVAILABLE": ai_available,
     }
 
 
@@ -557,21 +626,15 @@ def s7_secondary_intel(state: dict) -> dict:
         return {"SEC_PROFILES": [], "SEC_CONTACTS": []}
 
     logger.info(f"[s7] Fetching intel for {len(secondaries)} secondary buyers")
+    _s7_start = time.time()
 
     run_id = state.get("DB_RUN_ID")
 
     def _fetch_one(buyer):
         bid = buyer["buyerId"]
         bname = buyer["buyerName"]
-        prof, cons = None, []
-        try:
-            prof = tools.buyer_profile(bid)
-        except Exception as e:
-            logger.warning(f"  profile failed for {bname}: {e}")
-        try:
-            cons = _contacts_list(tools.buyer_contacts(bid, page_size=SECONDARY_CONTACT_PAGE_SIZE))
-        except Exception as e:
-            logger.warning(f"  contacts failed for {bname}: {e}")
+        prof = tools.buyer_profile(bid)
+        cons = _contacts_list(tools.buyer_contacts(bid, page_size=SECONDARY_CONTACT_PAGE_SIZE))
         return {"profile": prof, "contacts": cons, "buyerId": bid, "buyerName": bname}
 
     profiles = []
@@ -579,24 +642,20 @@ def s7_secondary_intel(state: dict) -> dict:
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS_SECONDARY) as pool:
         futures = {pool.submit(_fetch_one, b): b["buyerName"] for b in secondaries[:MAX_SECONDARY_BUYERS]}
-        try:
-            for f in as_completed(futures, timeout=TIMEOUTS.get("s7", 20)):
-                try:
-                    r = f.result()
-                    profiles.append(r["profile"])
-                    contacts_out.append({
-                        "buyerId": r["buyerId"],
-                        "buyerName": r["buyerName"],
-                        "contacts": r["contacts"],
-                    })
-                except Exception as e:
-                    logger.warning(f"  secondary fetch error: {e}")
-        except FuturesTimeout:
-            logger.warning("  some secondary fetches timed out")
+        for f in as_completed(futures, timeout=TIMEOUTS.get("s7", 20)):
+            r = f.result()
+            profiles.append(r["profile"])
+            contacts_out.append({
+                "buyerId": r["buyerId"],
+                "buyerName": r["buyerName"],
+                "contacts": r["contacts"],
+            })
 
     logger.info(f"  fetched {len(profiles)} profiles, {len(contacts_out)} contact sets")
     log_step(run_id, "s7_secondary_intel", "success",
-             f"{len(profiles)} profiles, {len(contacts_out)} contact sets")
+             f"{len(profiles)} profiles, {len(contacts_out)} contact sets",
+             duration=time.time() - _s7_start,
+             metadata=_summarize_output({"SEC_PROFILES": profiles, "SEC_CONTACTS": contacts_out}))
     return {"SEC_PROFILES": profiles, "SEC_CONTACTS": contacts_out}
 
 
@@ -631,7 +690,8 @@ def s8_exec_summary(state: dict) -> dict:
     if run_id:
         log_step(run_id, "s8_exec_summary", "success",
                  f"{signal_count} signals, {buyer_count} buyers, featured={featured}",
-                 duration=time.time() - _s8_start)
+                 duration=time.time() - _s8_start,
+                 metadata=_summarize_output({"SECTION_EXEC_SUMMARY": summary}))
 
     return {"SECTION_EXEC_SUMMARY": summary}
 
@@ -649,35 +709,20 @@ def s9_featured_section(state: dict) -> dict:
     buyer_type = state.get("FEATURED_BUYER_TYPE", "")
     product = state.get("target_company", "")
     product_desc = state.get("product_description", "")
-    campaign_signal = state.get("campaign_signal", "")
 
     with StepTimer(run_id, "s9_featured_section") as t:
-        try:
-            section = llm.featured_section(
-                buyer_name=buyer_name,
-                buyer_type=buyer_type,
-                product=product,
-                product_desc=product_desc,
-                campaign_signal=campaign_signal,
-                profile_json=json.dumps(profile, indent=2, default=str)[:AI_PROFILE_CHAR_LIMIT],
-                contacts_json=json.dumps(contacts[:AI_CONTACTS_MAX], indent=2, default=str)[:AI_CONTACTS_CHAR_LIMIT],
-                opps_json=json.dumps(opps[:AI_OPPS_MAX], indent=2, default=str)[:AI_OPPS_CHAR_LIMIT],
-                ai_context=str(ai_ctx)[:AI_CONTEXT_CHAR_LIMIT] if ai_ctx else None,
-            )
-            t.message = f"{len(section)} chars"
-        except Exception as e:
-            logger.error(f"  LLM failed for s9: {e}")
-            t.status = "failure"
-            t.message = str(e)
-            emoji = BUYER_TYPE_EMOJI.get(buyer_type, "📊")
-            label = BUYER_TYPE_LABEL.get(buyer_type, buyer_type)
-            section = (
-                f"> {emoji}\n>\n"
-                f"> **{buyer_name}** | {label}\n\n"
-                f"*Featured buyer section generation failed. "
-                f"Data was collected ({len(contacts)} contacts, {len(opps)} opportunities) "
-                f"but LLM generation encountered an error.*"
-            )
+        section = llm.featured_section(
+            buyer_name=buyer_name,
+            buyer_type=buyer_type,
+            product=product,
+            product_desc=product_desc,
+            profile_json=json.dumps(profile, indent=2, default=str)[:AI_PROFILE_CHAR_LIMIT],
+            contacts_json=json.dumps(contacts[:AI_CONTACTS_MAX], indent=2, default=str)[:AI_CONTACTS_CHAR_LIMIT],
+            opps_json=json.dumps(opps[:AI_OPPS_MAX], indent=2, default=str)[:AI_OPPS_CHAR_LIMIT],
+            ai_context=str(ai_ctx)[:AI_CONTEXT_CHAR_LIMIT] if ai_ctx else None,
+        )
+        t.message = f"{len(section)} chars"
+        t.metadata = _summarize_output({"SECTION_FEATURED": section})
 
     return {"SECTION_FEATURED": section}
 
@@ -715,21 +760,9 @@ def s10_secondary_cards(state: dict) -> dict:
         buyers_content += "\n"
 
     with StepTimer(run_id, "s10_secondary_cards") as t:
-        try:
-            section = llm.secondary_cards(product, product_desc, buyers_content)
-            t.message = f"{len(section)} chars, {len(secondaries)} buyers"
-        except Exception as e:
-            logger.error(f"  LLM failed for s10: {e}")
-            t.status = "failure"
-            t.message = str(e)
-            cards = []
-            for b in secondaries[:MAX_SECONDARY_BUYERS]:
-                label = BUYER_TYPE_LABEL.get(b.get("buyerType", ""), b.get("buyerType", ""))
-                cards.append(
-                    f"**{b['buyerName']}** | {label}\n"
-                    f"- Top Signal: {b.get('topSignalSummary', 'N/A')}"
-                )
-            section = "\n\n".join(cards)
+        section = llm.secondary_cards(product, product_desc, buyers_content)
+        t.message = f"{len(section)} chars, {len(secondaries)} buyers"
+        t.metadata = _summarize_output({"SECTION_SECONDARY": section})
 
     return {"SECTION_SECONDARY": section}
 
@@ -765,81 +798,133 @@ def s11_cta(state: dict) -> dict:
     if run_id:
         log_step(run_id, "s11_cta", "success",
                  f"{total_signals} signals, {len(all_buyers)} buyers",
-                 duration=time.time() - _s11_start)
+                 duration=time.time() - _s11_start,
+                 metadata=_summarize_output({"SECTION_CTA": cta}))
 
     return {"SECTION_CTA": cta}
 
 
-def s12_footer(state: dict) -> dict:
-    """s12 — Template: report footer (no LLM)."""
-    logger.info("[s12] Footer (template)")
-    _s12_start = time.time()
-
-    now = datetime.now()
-    month_year = now.strftime("%B %Y")
-    ai_available = state.get("FEAT_AI_CONTEXT_AVAILABLE", False)
-
-    footer = f"*Generated Starbridge Intelligence {month_year}*\n\n"
-    if ai_available:
-        footer += "*Data source: Starbridge buyer profile, contacts, AI analysis, and opportunity database*"
-    else:
-        footer += "*Data source: Starbridge buyer profile, contacts, and opportunity database. AI analysis was unavailable.*"
-
-    run_id = state.get("DB_RUN_ID")
-    if run_id:
-        log_step(run_id, "s12_footer", "success",
-                 f"ai_available={ai_available}",
-                 duration=time.time() - _s12_start)
-
-    return {"SECTION_FOOTER": footer}
-
-
 # ── Phase VII: ASSEMBLE & VALIDATE ──────────────────────────────────────────
 
-def s13_assemble(state: dict) -> dict:
-    """s13 — Concatenate sections into final markdown report."""
-    logger.info("[s13] Assembling report")
-    _s13_start = time.time()
 
+def _extract_notion_url(result):
+    """Extract Notion page URL from the Datagen MCP / SDK response.
+
+    Handles multiple response formats:
+    - MCP CallToolResult: {content: [{type: "text", text: "...json..."}]}
+    - SDK list format: [{pages: [{id, url, ...}]}]
+    - SDK dict format: {pages: [{id, url, ...}]}
+    - Plain URL string
+    """
+    # Unwrap MCP CallToolResult format
+    if isinstance(result, dict) and "content" in result and isinstance(result.get("content"), list):
+        for item in result["content"]:
+            if isinstance(item, dict) and item.get("type") == "text" and item.get("text"):
+                try:
+                    result = json.loads(item["text"])
+                    break
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+    page = None
+    if isinstance(result, list) and result:
+        inner = result[0]
+        if isinstance(inner, dict) and "pages" in inner:
+            pages = inner["pages"]
+            page = pages[0] if pages else None
+        elif isinstance(inner, dict):
+            page = inner
+    elif isinstance(result, dict):
+        if "pages" in result:
+            pages = result["pages"]
+            page = pages[0] if pages else None
+        else:
+            page = result
+    elif isinstance(result, str) and result.startswith("http"):
+        page = {"url": result}
+
+    url = None
+    if isinstance(page, dict):
+        url = page.get("url") or page.get("page_url") or page.get("public_url")
+        if not url and page.get("id"):
+            url = f"https://notion.so/{page['id'].replace('-', '')}"
+
+    if not url:
+        raise RuntimeError(f"Notion publish succeeded but no URL extracted from: {result}")
+
+    return url
+
+
+def s12_assemble(state: dict) -> dict:
+    """s12 — LLM-driven report assembly + Notion publish.
+
+    LLM with Notion MCP tool access assembles the report from pre-generated
+    sections (s8 exec summary, s9 featured, s10 secondary, s11 CTA) and
+    publishes to Notion in a single Claude CLI session. Retries once on failure
+    (fresh LLM call may format MCP params differently). Hard-fails after 2nd attempt.
+    """
+    logger.info("[s12] Assembling report from sections + publishing to Notion")
+    _s12_start = time.time()
+
+    run_id = state.get("DB_RUN_ID")
     buyer_name = state.get("FEATURED_BUYER_NAME", "Unknown")
     product = state.get("target_company", "")
 
-    header = f"# 📊 {buyer_name} — Intelligence Report for {product}"
+    if not NOTION_PARENT_PAGE_ID:
+        raise RuntimeError("NOTION_PARENT_PAGE_ID not set — cannot publish")
 
-    # Regenerate footer — s12 runs in parallel with s6 and may not have
-    # the correct AI availability flag at generation time
-    now = datetime.now()
-    month_year = now.strftime("%B %Y")
-    ai_available = state.get("FEAT_AI_CONTEXT_AVAILABLE", False)
-    footer = f"*Generated Starbridge Intelligence {month_year}*\n\n"
-    if ai_available:
-        footer += "*Data source: Starbridge buyer profile, contacts, AI analysis, and opportunity database*"
-    else:
-        footer += "*Data source: Starbridge buyer profile, contacts, and opportunity database. AI analysis was unavailable.*"
+    data_kwargs = {
+        "target_company": product,
+        "product_description": state.get("product_description", ""),
+        "buyer_name": buyer_name,
+        "buyer_type": state.get("FEATURED_BUYER_TYPE", ""),
+        "section_featured": (
+            state.get("SECTION_FEATURED") or ""
+        )[:AI_REPORT_SECTION_CHAR_LIMIT],
+        "section_secondary": (
+            state.get("SECTION_SECONDARY") or ""
+        )[:AI_REPORT_SECTION_CHAR_LIMIT],
+        "section_exec_summary": (
+            state.get("SECTION_EXEC_SUMMARY") or ""
+        )[:AI_REPORT_SECTION_CHAR_LIMIT],
+        "section_cta": (
+            state.get("SECTION_CTA") or ""
+        )[:AI_REPORT_SECTION_CHAR_LIMIT],
+    }
 
-    sections = [
-        header,
-        state.get("SECTION_EXEC_SUMMARY", ""),
-        state.get("SECTION_FEATURED", ""),
-        state.get("SECTION_SECONDARY", ""),
-        state.get("SECTION_CTA", ""),
-        footer,
-    ]
-
-    parts = [s.strip() for s in sections if s and s.strip()]
-    report = "\n\n---\n\n".join(parts)
+    # Retry on failure — the LLM may format MCP params wrong or Notion may 500.
+    # A fresh LLM call can produce correct params on retry.
+    max_attempts = 2
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            report, notion_url = llm.shape_and_publish_report(
+                **data_kwargs,
+                notion_parent_page_id=NOTION_PARENT_PAGE_ID,
+            )
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < max_attempts - 1:
+                log_step(run_id, "s12_assemble_retry", "warning",
+                         f"Attempt {attempt+1} failed: {e}, retrying...")
+                logger.warning(f"  s12 attempt {attempt+1} failed: {e}, retrying...")
+            else:
+                raise
     report = re.sub(r'\n{3,}', '\n\n', report)
+    logger.info(f"  Report shaped + published: {len(report)} chars, URL: {notion_url}")
 
-    logger.info(f"  report assembled: {len(report)} chars, {len(parts)} sections")
-    log_step(state.get("DB_RUN_ID"), "s13_assemble", "success",
-             f"{len(report)} chars, {len(parts)} sections",
-             duration=time.time() - _s13_start)
-    return {"REPORT_MARKDOWN": report}
+    log_step(run_id, "s12_assemble", "success",
+             f"{len(report)} chars",
+             duration=time.time() - _s12_start,
+             metadata=_summarize_output({"REPORT_MARKDOWN": report, "NOTION_PAGE_URL": notion_url}))
+
+    return {"REPORT_MARKDOWN": report, "NOTION_PAGE_URL": notion_url}
 
 
-def s14_validate(state: dict) -> dict:
-    """s14 — Deterministic validation checks + advisory LLM fact-check."""
-    logger.info("[s14] Validating report")
+def s13_validate(state: dict) -> dict:
+    """s13 — Deterministic validation checks + mandatory LLM fact-check."""
+    logger.info("[s13] Validating report")
 
     run_id = state.get("DB_RUN_ID")
     report = state.get("REPORT_MARKDOWN", "")
@@ -870,46 +955,29 @@ def s14_validate(state: dict) -> dict:
     if len(report) < 500:
         issues.append(f"Report suspiciously short ({len(report)} chars)")
 
-    # Check 6: featured contact verification (deterministic)
-    feat_contacts = state.get("FEAT_CONTACTS") or []
-    if feat_contacts:
-        known_emails = {c.get("email", "").lower() for c in feat_contacts if c.get("email")}
-        featured_section = state.get("SECTION_FEATURED", "")
-        email_pattern = re.findall(r'[\w.+-]+@[\w.-]+\.\w+', featured_section)
-        for email in email_pattern:
-            if email.lower() not in known_emails:
-                issues.append(f"Contact email '{email}' in featured section not found in buyer contacts")
+    # Check 6: email format validation (deterministic)
+    email_pattern = re.findall(r'[\w.+-]+@[\w.-]+\.\w+', report)
+    for email in email_pattern:
+        if not re.match(r'^[\w.+-]+@[\w.-]+\.\w{2,}$', email):
+            issues.append(f"Malformed email '{email}' in report")
 
     # Check 7: secondary buyer names match scored buyers
     secondary_names = {b["buyerName"] for b in (state.get("SECONDARY_BUYERS") or [])}
     if secondary_names:
-        secondary_section = state.get("SECTION_SECONDARY", "")
         for name in secondary_names:
-            if name not in secondary_section:
-                warnings.append(f"Secondary buyer '{name}' not found in secondary section")
+            if name not in report:
+                warnings.append(f"Secondary buyer '{name}' not found in report")
 
-    # Check 8 (advisory): LLM fact-check
-    with StepTimer(run_id, "s14_llm_fact_check") as t:
-        try:
-            source_data = (
-                f"BUYER: {buyer_name}\n"
-                f"PROFILE: {json.dumps(state.get('FEAT_PROFILE'), default=str)[:AI_VALIDATION_SOURCE_LIMIT]}\n"
-                f"CONTACTS: {json.dumps((state.get('FEAT_CONTACTS') or [])[:10], default=str)[:1500]}\n"
-                f"OPPORTUNITIES: {json.dumps((state.get('FEAT_OPPORTUNITIES') or [])[:10], default=str)[:AI_VALIDATION_SOURCE_LIMIT]}\n"
-                f"AI CONTEXT: {str(state.get('FEAT_AI_CONTEXT', ''))[:1500]}\n\n"
-                f"REPORT TO CHECK:\n{report[:4000]}"
-            )
-            passed, detail = llm.fact_check(buyer_name, report, source_data)
-            if not passed:
-                warnings.append(f"LLM hallucination check: {detail}")
-                t.status = "warning"
-            t.message = f"{'PASS' if passed else 'FAIL'}: {detail[:100]}"
-        except Exception as e:
-            logger.warning(f"  hallucination check skipped: {e}")
+    # Check 8: LLM consistency check
+    with StepTimer(run_id, "s13_llm_fact_check") as t:
+        fc_passed, detail = llm.fact_check(buyer_name, report)
+        if not fc_passed:
+            warnings.append(f"LLM consistency check: {detail}")
             t.status = "warning"
-            t.message = f"skipped: {e}"
+        t.message = f"{'PASS' if fc_passed else 'FAIL'}: {detail[:100]}"
 
     passed = len(issues) == 0
+    all_findings = issues + warnings
     logger.info(f"  validation: {'PASS' if passed else f'FAIL ({len(issues)} issues)'}"
                 f"{f', {len(warnings)} warnings' if warnings else ''}")
     for issue in issues:
@@ -917,96 +985,82 @@ def s14_validate(state: dict) -> dict:
     for warning in warnings:
         logger.warning(f"    WARN: {warning}")
 
-    log_step(run_id, "s14_validate", "success" if passed else "failure",
-             f"{'PASS' if passed else 'FAIL'}: {len(issues)} issues, {len(warnings)} warnings",
-             metadata={"issues": issues, "warnings": warnings})
+    # If any issues or warnings found, fix the report and update Notion
+    validated_report = None
+    if all_findings:
+        notion_url = state.get("NOTION_PAGE_URL")
 
-    return {
+        # Step 1: LLM fixes the report
+        with StepTimer(run_id, "s13_fix_report") as t_fix:
+            try:
+                validated_report = llm.fix_report(
+                    state.get("FEATURED_BUYER_NAME", ""),
+                    state.get("REPORT_MARKDOWN", ""),
+                    issues, warnings,
+                )
+                validated_report = re.sub(r'\n{3,}', '\n\n', validated_report)
+                t_fix.message = f"Fixed {len(all_findings)} findings, {len(validated_report)} chars"
+                logger.info(f"  Report fixed: {len(validated_report)} chars ({len(all_findings)} findings addressed)")
+            except Exception as e:
+                t_fix.status = "warning"
+                t_fix.message = f"Fix failed: {e}"
+                logger.warning(f"  Report fix failed (non-blocking): {e}")
+                validated_report = None
+
+        # Step 2: Update Notion page with fixed content
+        if validated_report and notion_url:
+            with StepTimer(run_id, "s13_notion_update") as t_nu:
+                try:
+                    page_id_match = re.search(r'([0-9a-f]{32})\s*$', notion_url.replace("-", ""))
+                    if page_id_match:
+                        page_id = page_id_match.group(1)
+                        tools.notion_update_page(page_id, content=validated_report)
+                        t_nu.message = f"Notion page updated with fixed report"
+                        logger.info(f"  Notion page updated with corrected report")
+                    else:
+                        t_nu.status = "warning"
+                        t_nu.message = "Could not extract page ID from Notion URL"
+                        logger.warning("  Could not extract page ID from Notion URL")
+                except Exception as e:
+                    t_nu.status = "warning"
+                    t_nu.message = f"Notion update failed: {e}"
+                    logger.warning(f"  Notion page update failed (non-blocking): {e}")
+
+    log_step(run_id, "s13_validate", "success" if passed else "failure",
+             f"{'PASS' if passed else 'FAIL'}: {len(issues)} issues, {len(warnings)} warnings"
+             + (", fixed + Notion updated" if validated_report else ""),
+             metadata={"issues": issues, "warnings": warnings, "fixed": validated_report is not None})
+
+    result = {
         "VALIDATION_RESULT": {
             "passed": passed,
             "issues": issues,
             "warnings": warnings,
+            "fixed": validated_report is not None,
             "checked_at": datetime.now().isoformat(),
         }
     }
+    if validated_report:
+        result["VALIDATED_REPORT_MARKDOWN"] = validated_report
+    return result
 
 
-def s15_publish_notion(state: dict) -> dict:
-    """s15 — Publish report to Notion via Datagen MCP."""
-    logger.info("[s15] Publishing to Notion")
-
-    run_id = state.get("DB_RUN_ID")
-
-    if not NOTION_PARENT_PAGE_ID:
-        logger.warning("  NOTION_PARENT_PAGE_ID not set — skipping Notion publish")
-        log_step(run_id, "s15_publish_notion", "skipped", "No parent page ID", duration=0)
-        return {"NOTION_PAGE_URL": None}
-
-    buyer_name = state.get("FEATURED_BUYER_NAME", "Unknown")
-    product = state.get("target_company", "")
-    title = f"{buyer_name} — Intelligence Report for {product}"
-    report = state.get("REPORT_MARKDOWN", "")
-
-    with StepTimer(run_id, "s15_publish_notion") as t:
-        try:
-            result = tools.notion_create_page(
-                title=title,
-                content=report,
-                parent_page_id=NOTION_PARENT_PAGE_ID,
-            )
-
-            page = None
-            if isinstance(result, list) and result:
-                inner = result[0]
-                if isinstance(inner, dict) and "pages" in inner:
-                    pages = inner["pages"]
-                    page = pages[0] if pages else None
-                elif isinstance(inner, dict):
-                    page = inner
-            elif isinstance(result, dict):
-                if "pages" in result:
-                    pages = result["pages"]
-                    page = pages[0] if pages else None
-                else:
-                    page = result
-            elif isinstance(result, str) and result.startswith("http"):
-                page = {"url": result}
-
-            url = None
-            if isinstance(page, dict):
-                url = page.get("url") or page.get("page_url") or page.get("public_url")
-                if not url and page.get("id"):
-                    url = f"https://notion.so/{page['id'].replace('-', '')}"
-
-            t.message = f"url={url}"
-            logger.info(f"  Notion URL: {url}")
-            return {"NOTION_PAGE_URL": url}
-        except Exception as e:
-            logger.error(f"  Notion publish failed: {e}")
-            t.status = "failure"
-            t.message = str(e)
-            return {"NOTION_PAGE_URL": None}
-
-
-def s16_save_and_respond(state: dict) -> dict:
-    """s16 — Update SQLite run, build final response JSON."""
-    logger.info("[s16] Saving + building response")
+def s14_save_and_respond(state: dict) -> dict:
+    """s14 — Update SQLite run, build final response JSON."""
+    logger.info("[s14] Saving + building response")
 
     run_id = state.get("DB_RUN_ID")
 
     if run_id:
-        try:
-            update_run_completed(run_id, state)
-            feat_contacts = state.get("FEAT_CONTACTS") or []
-            if feat_contacts:
-                insert_contacts(run_id, state.get("FEATURED_BUYER_ID"), feat_contacts)
-            logger.info(f"  run {run_id} → completed")
-        except Exception as e:
-            logger.error(f"  SQLite final update failed: {e}")
+        update_run_completed(run_id, state)
+        feat_contacts = state.get("FEAT_CONTACTS") or []
+        if feat_contacts:
+            insert_contacts(run_id, state.get("FEATURED_BUYER_ID"), feat_contacts)
+        logger.info(f"  run {run_id} → completed")
 
     elapsed = time.time() - state.get("_start_time", time.time())
 
-    log_step(run_id, "s16_pipeline_complete", "success",
+    log_step(run_id, "s14_pipeline_complete", "success",
              f"total={elapsed:.1f}s",
              duration=elapsed,
              metadata={
@@ -1025,7 +1079,6 @@ def s16_save_and_respond(state: dict) -> dict:
             "profile_available": state.get("FEAT_PROFILE") is not None,
             "contacts_count": len(state.get("FEAT_CONTACTS") or []),
             "opportunities_count": len(state.get("FEAT_OPPORTUNITIES") or []),
-            "ai_chat_available": state.get("FEAT_AI_CONTEXT_AVAILABLE", False),
             "secondary_buyers": len(state.get("SECONDARY_BUYERS") or []),
             "total_signals_scanned": (
                 len(state.get("DISCOVERY_SIGNALS_A") or [])
@@ -1043,20 +1096,24 @@ def s16_save_and_respond(state: dict) -> dict:
 
 # ── Orchestrator ────────────────────────────────────────────────────────────
 
-def run_pipeline(webhook: dict) -> dict:
-    """Execute the full 19-step intel brief pipeline.
+def run_pipeline(webhook: dict, stop_event=None, run_id=None) -> dict:
+    """Execute the full 18-step intel brief pipeline.
 
     Phase I-II:  s0 → s1 (sequential — run stub created in s1)
     Phase III:   s2 (LLM sub-agent)
-    Phase IV:    s3a, s3b, s3c (parallel)
+    Phase IV:    s3a, s3b, s3c, s3d (parallel)
     Phase V:     s4 → s5 (sequential — discovery backfilled)
-    Phase VI:    5 parallel branches:
+    Phase VI:    4 parallel branches:
                    a) s8           — exec summary (template)
                    b) s6 → s9     — featured intel → featured section
                    c) s7 → s10    — secondary intel → secondary cards
                    d) s11          — CTA (template)
-                   e) s12          — footer (template)
-    Phase VII:   s13 → s14 → s15 → s16 (sequential)
+    Phase VII:   s12 → s13 → s14 (sequential — s12 shapes + publishes to Notion)
+
+    Args:
+        stop_event: threading.Event — set by /api/kill to cancel the pipeline.
+        run_id: Pre-assigned DB run ID (batch mode). If provided, s1 skips
+                stub creation and reuses this ID.
 
     On failure: partial state is persisted to SQLite, run marked 'failed',
     and the error response includes all collected data.
@@ -1065,6 +1122,14 @@ def run_pipeline(webhook: dict) -> dict:
     logger.info("INTEL BRIEF PIPELINE — START")
     logger.info("=" * 60)
 
+    # Register the stop event so LLM subprocess calls can be killed mid-run
+    if stop_event:
+        llm.set_cancel_event(stop_event)
+
+    def _check_cancelled():
+        if stop_event and stop_event.is_set():
+            raise PipelineCancelled("Pipeline killed by user")
+
     state = {}
     pipeline_error = None
 
@@ -1072,6 +1137,8 @@ def run_pipeline(webhook: dict) -> dict:
         # ── Phase I-II: sequential ──────────────────────────────────
         t0 = time.time()
         state = s0_parse_webhook(webhook)
+        if run_id:
+            state["DB_RUN_ID"] = run_id  # Pre-assigned (batch mode)
         s0_dur = time.time() - t0
         t1 = time.time()
         state |= s1_validate_and_load(state)
@@ -1080,40 +1147,41 @@ def run_pipeline(webhook: dict) -> dict:
         # Retroactively log s0 + s1 with durations (ran before/during run_id creation)
         log_step(run_id, "s0_parse_webhook", "success",
                  f"target={state.get('target_company')} ({state.get('target_domain')})",
-                 duration=s0_dur)
+                 duration=s0_dur,
+                 metadata={"target_company": state.get("target_company"), "target_domain": state.get("target_domain"),
+                           "product_description": state.get("product_description")})
         prior = state.get("PRIOR_RUNS", [])
-        cached = state.get("EXISTING_INSIGHTS", [])
         log_step(run_id, "s1_validate_and_load", "success",
-                 f"run_id={run_id}, prior={len(prior)}, cached={len(cached)}",
-                 duration=s1_dur)
+                 f"run_id={run_id}, prior={len(prior)}, dedup={'on' if ENABLE_PRIOR_RUN_DEDUP else 'off'}",
+                 duration=s1_dur,
+                 metadata={"run_id": run_id, "prior_runs": len(prior), "dedup_enabled": ENABLE_PRIOR_RUN_DEDUP})
 
         # ── Phase III: sequential (LLM sub-agent) ────────────────────
+        _check_cancelled()
         state |= s2_search_strategy(state)
 
         # ── Phase IV: parallel discovery ────────────────────────────
-        logger.info("── Phase IV: parallel discovery (s3a, s3b, s3c) ──")
+        _check_cancelled()
+        logger.info("── Phase IV: parallel discovery (s3a, s3b, s3c, s3d) ──")
         with ThreadPoolExecutor(max_workers=MAX_WORKERS_DISCOVERY) as pool:
             futures = {
                 pool.submit(s3a_primary_search, state): "s3a",
                 pool.submit(s3b_alternate_search, state): "s3b",
-                pool.submit(s3c_buyer_search, state): "s3c",
+                pool.submit(s3c_buyer_type_search, state): "s3c",
+                pool.submit(s3d_buyer_geo_search, state): "s3d",
             }
-            try:
-                for f in as_completed(futures, timeout=TIMEOUTS.get("s3a", 20)):
-                    label = futures[f]
-                    try:
-                        state |= f.result()
-                        logger.info(f"  {label} ✓")
-                    except Exception as e:
-                        logger.error(f"  {label} failed: {e}")
-            except FuturesTimeout:
-                logger.warning("  discovery phase timed out — proceeding with partial results")
+            for f in as_completed(futures, timeout=TIMEOUTS.get("s3a", 20)):
+                label = futures[f]
+                state |= f.result()
+                logger.info(f"  {label} ✓")
 
         # ── Phase V: sequential ─────────────────────────────────────
+        _check_cancelled()
         state |= s4_rank_and_select(state)
         state |= s5_persist_discovery(state)
 
         # ── Phase VI: 5 parallel branches ───────────────────────────
+        _check_cancelled()
         logger.info("── Phase VI: parallel enrich + generate ──")
 
         def _branch_featured(st):
@@ -1128,30 +1196,48 @@ def run_pipeline(webhook: dict) -> dict:
             r10 = s10_secondary_cards({**st, **r7})
             return {**r7, **r10}
 
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS_ENRICHMENT) as pool:
+        pool = ThreadPoolExecutor(max_workers=MAX_WORKERS_ENRICHMENT)
+        try:
             futures = {
                 pool.submit(s8_exec_summary, state): "s8 (exec summary)",
                 pool.submit(_branch_featured, state): "s6→s9 (featured)",
                 pool.submit(_branch_secondary, state): "s7→s10 (secondary)",
                 pool.submit(s11_cta, state): "s11 (CTA)",
-                pool.submit(s12_footer, state): "s12 (footer)",
             }
-            try:
-                for f in as_completed(futures, timeout=TIMEOUTS.get("s6", 45)):
-                    label = futures[f]
-                    try:
-                        state |= f.result()
-                        logger.info(f"  {label} ✓")
-                    except Exception as e:
-                        logger.error(f"  {label} failed: {e}")
-            except FuturesTimeout:
-                logger.warning("  Phase VI timed out — proceeding with completed branches")
+            for f in as_completed(futures, timeout=TIMEOUTS.get("s6", 330)):
+                label = futures[f]
+                state |= f.result()
+                logger.info(f"  {label} ✓")
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
-        # ── Phase VII: sequential ───────────────────────────────────
-        state |= s13_assemble(state)
-        state |= s14_validate(state)
-        state |= s15_publish_notion(state)
-        return s16_save_and_respond(state)
+        # ── Phase VII: sequential (s12 shapes + publishes to Notion) ─
+        _check_cancelled()
+        state |= s12_assemble(state)
+        state |= s13_validate(state)
+        return s14_save_and_respond(state)
+
+    except PipelineCancelled:
+        logger.warning("Pipeline cancelled by user")
+        run_id = state.get("DB_RUN_ID")
+        elapsed = time.time() - state.get("_start_time", time.time())
+        if run_id:
+            try:
+                update_run_cancelled(run_id)
+                log_step(run_id, "pipeline_cancelled", "failure",
+                         "Cancelled by user",
+                         duration=elapsed,
+                         metadata={"last_keys": sorted(state.keys())})
+            except Exception as db_err:
+                logger.error(f"  Failed to persist cancel state: {db_err}")
+        return {
+            "status": "cancelled",
+            "run_id": run_id,
+            "metadata": {
+                "generation_timestamp": datetime.now().isoformat(),
+                "cancelled_after_seconds": round(elapsed, 1),
+            },
+        }
 
     except Exception as e:
         pipeline_error = e

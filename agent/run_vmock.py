@@ -20,7 +20,6 @@ VMOCK_WEBHOOK = {
         "AI-powered career services platform for universities — resume reviews, "
         "interview prep, career readiness assessments, and employer matching"
     ),
-    "campaign_signal": "career services technology",
     "campaign_id": "test_vmock_001",
     "prospect_name": "Test Prospect",
     "prospect_email": "test@vmock.com",

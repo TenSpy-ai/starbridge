@@ -21,32 +21,36 @@ def init_db():
         CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             target_domain TEXT NOT NULL,
+            prospect_name TEXT,
             prospect_email TEXT,
             target_company TEXT,
             product_description TEXT,
             campaign_id TEXT,
+            tier TEXT,
+            batch_id INTEGER,
             search_strategy TEXT,
             discovery_signals_a TEXT,
             discovery_signals_b TEXT,
             discovery_buyers TEXT,
             featured_buyer_id TEXT,
             featured_buyer_name TEXT,
+            featured_buyer_type TEXT,
+            selection_rationale TEXT,
             secondary_buyers TEXT,
             feat_profile TEXT,
             feat_contacts TEXT,
             feat_opportunities TEXT,
             feat_ai_context TEXT,
-            feat_ai_context_available INTEGER,
             sec_profiles TEXT,
             sec_contacts TEXT,
             section_exec_summary TEXT,
             section_featured TEXT,
             section_secondary TEXT,
             section_cta TEXT,
-            section_footer TEXT,
             report_markdown TEXT,
+            validation_result TEXT,
             notion_url TEXT,
-            status TEXT DEFAULT 'processing',
+            status TEXT DEFAULT 'pending',
             created_at TEXT DEFAULT (datetime('now')),
             completed_at TEXT
         );
@@ -72,7 +76,6 @@ def init_db():
             contact_title TEXT,
             contact_email TEXT,
             email_verified INTEGER,
-            relevance_score REAL,
             discovered_at TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (run_id) REFERENCES runs(id)
         );
@@ -90,11 +93,15 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_runs_domain ON runs(target_domain);
-        CREATE INDEX IF NOT EXISTS idx_discoveries_domain ON discoveries(target_domain);
         CREATE INDEX IF NOT EXISTS idx_contacts_buyer ON contacts(buyer_id);
         CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_log(run_id);
-        CREATE INDEX IF NOT EXISTS idx_audit_step ON audit_log(step);
     """)
+    # Migrate: add columns to existing DBs that lack them
+    for col, spec in [("prospect_name", "TEXT"), ("tier", "TEXT"), ("featured_buyer_type", "TEXT"), ("selection_rationale", "TEXT"), ("validation_result", "TEXT"), ("batch_id", "INTEGER")]:
+        try:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {spec}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.close()
 
 
@@ -128,17 +135,20 @@ def load_prior_runs(target_domain):
     return [dict(r) for r in rows]
 
 
-def load_existing_insights(target_domain):
+
+def get_batch_runs(batch_id):
+    """Get all runs belonging to a batch, lightweight fields only."""
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM discoveries WHERE target_domain = ? ORDER BY signal_score DESC LIMIT 50",
-        (target_domain,)
+        "SELECT id, target_domain, target_company, status, created_at, completed_at, "
+        "featured_buyer_name, notion_url FROM runs WHERE batch_id = ? ORDER BY id",
+        (batch_id,)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def insert_run_stub(data):
+def insert_run_stub(data, batch_id=None):
     """Create a minimal run row immediately after s0. Returns run_id.
 
     Only requires target_domain (the one field guaranteed after s0).
@@ -147,15 +157,19 @@ def insert_run_stub(data):
     """
     conn = get_connection()
     cur = conn.execute("""
-        INSERT INTO runs (target_domain, prospect_email, target_company,
-                          product_description, campaign_id)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO runs (target_domain, prospect_name, prospect_email,
+                          target_company, product_description, campaign_id, tier,
+                          batch_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         data.get("target_domain", ""),
+        data.get("prospect_name"),
         data.get("prospect_email"),
         data.get("target_company"),
         data.get("product_description"),
         data.get("campaign_id"),
+        data.get("tier"),
+        batch_id,
     ))
     run_id = cur.lastrowid
     conn.commit()
@@ -170,7 +184,8 @@ def update_run_discovery(run_id, data):
         UPDATE runs SET
             search_strategy = ?,
             discovery_signals_a = ?, discovery_signals_b = ?, discovery_buyers = ?,
-            featured_buyer_id = ?, featured_buyer_name = ?, secondary_buyers = ?
+            featured_buyer_id = ?, featured_buyer_name = ?, featured_buyer_type = ?,
+            selection_rationale = ?, secondary_buyers = ?
         WHERE id = ?
     """, (
         json.dumps(data.get("SEARCH_STRATEGY")),
@@ -178,6 +193,7 @@ def update_run_discovery(run_id, data):
         json.dumps(data.get("DISCOVERY_SIGNALS_B")),
         json.dumps(data.get("DISCOVERY_BUYERS")),
         data.get("FEATURED_BUYER_ID"), data.get("FEATURED_BUYER_NAME"),
+        data.get("FEATURED_BUYER_TYPE"), data.get("SELECTION_RATIONALE"),
         json.dumps(data.get("SECONDARY_BUYERS")),
         run_id,
     ))
@@ -190,19 +206,22 @@ def insert_run(data):
     conn = get_connection()
     cur = conn.execute("""
         INSERT INTO runs (
-            target_domain, prospect_email, target_company, product_description,
-            campaign_id, search_strategy,
+            target_domain, prospect_name, prospect_email, target_company,
+            product_description, campaign_id, tier, search_strategy,
             discovery_signals_a, discovery_signals_b, discovery_buyers,
-            featured_buyer_id, featured_buyer_name, secondary_buyers
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            featured_buyer_id, featured_buyer_name, featured_buyer_type,
+            selection_rationale, secondary_buyers
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        data["target_domain"], data.get("prospect_email"), data.get("target_company"),
-        data.get("product_description"), data.get("campaign_id"),
+        data["target_domain"], data.get("prospect_name"), data.get("prospect_email"),
+        data.get("target_company"), data.get("product_description"),
+        data.get("campaign_id"), data.get("tier"),
         json.dumps(data.get("SEARCH_STRATEGY")),
         json.dumps(data.get("DISCOVERY_SIGNALS_A")),
         json.dumps(data.get("DISCOVERY_SIGNALS_B")),
         json.dumps(data.get("DISCOVERY_BUYERS")),
         data.get("FEATURED_BUYER_ID"), data.get("FEATURED_BUYER_NAME"),
+        data.get("FEATURED_BUYER_TYPE"), data.get("SELECTION_RATIONALE"),
         json.dumps(data.get("SECONDARY_BUYERS")),
     ))
     run_id = cur.lastrowid
@@ -212,7 +231,13 @@ def insert_run(data):
 
 
 def update_run_failed(run_id, error_message, partial_state=None):
-    """Mark a run as 'failed' and save whatever partial state exists."""
+    """Mark a run as 'failed' and save whatever partial state exists.
+
+    Persists both discovery-phase and enrichment-phase data. Enrichment columns
+    come from Phase VI branches that completed before the failure (e.g. s7→s10
+    may succeed even if s6→s9 fails). Uses COALESCE to avoid overwriting data
+    already saved by s5_persist_discovery.
+    """
     conn = get_connection()
     conn.execute("""
         UPDATE runs SET
@@ -224,7 +249,20 @@ def update_run_failed(run_id, error_message, partial_state=None):
             discovery_buyers = COALESCE(discovery_buyers, ?),
             featured_buyer_id = COALESCE(featured_buyer_id, ?),
             featured_buyer_name = COALESCE(featured_buyer_name, ?),
-            report_markdown = COALESCE(report_markdown, ?)
+            featured_buyer_type = COALESCE(featured_buyer_type, ?),
+            selection_rationale = COALESCE(selection_rationale, ?),
+            feat_profile = COALESCE(feat_profile, ?),
+            feat_contacts = COALESCE(feat_contacts, ?),
+            feat_opportunities = COALESCE(feat_opportunities, ?),
+            feat_ai_context = COALESCE(feat_ai_context, ?),
+            sec_profiles = COALESCE(sec_profiles, ?),
+            sec_contacts = COALESCE(sec_contacts, ?),
+            section_exec_summary = COALESCE(section_exec_summary, ?),
+            section_featured = COALESCE(section_featured, ?),
+            section_secondary = COALESCE(section_secondary, ?),
+            section_cta = COALESCE(section_cta, ?),
+            report_markdown = COALESCE(report_markdown, ?),
+            validation_result = COALESCE(validation_result, ?)
         WHERE id = ?
     """, (
         json.dumps(partial_state.get("SEARCH_STRATEGY")) if partial_state else None,
@@ -233,9 +271,33 @@ def update_run_failed(run_id, error_message, partial_state=None):
         json.dumps(partial_state.get("DISCOVERY_BUYERS")) if partial_state else None,
         partial_state.get("FEATURED_BUYER_ID") if partial_state else None,
         partial_state.get("FEATURED_BUYER_NAME") if partial_state else None,
+        partial_state.get("FEATURED_BUYER_TYPE") if partial_state else None,
+        partial_state.get("SELECTION_RATIONALE") if partial_state else None,
+        json.dumps(partial_state.get("FEAT_PROFILE")) if partial_state else None,
+        json.dumps(partial_state.get("FEAT_CONTACTS")) if partial_state else None,
+        json.dumps(partial_state.get("FEAT_OPPORTUNITIES")) if partial_state else None,
+        partial_state.get("FEAT_AI_CONTEXT") if partial_state else None,
+        json.dumps(partial_state.get("SEC_PROFILES")) if partial_state else None,
+        json.dumps(partial_state.get("SEC_CONTACTS")) if partial_state else None,
+        partial_state.get("SECTION_EXEC_SUMMARY") if partial_state else None,
+        partial_state.get("SECTION_FEATURED") if partial_state else None,
+        partial_state.get("SECTION_SECONDARY") if partial_state else None,
+        partial_state.get("SECTION_CTA") if partial_state else None,
         partial_state.get("REPORT_MARKDOWN") if partial_state else None,
+        json.dumps(partial_state.get("VALIDATION_RESULT")) if partial_state else None,
         run_id,
     ))
+    conn.commit()
+    conn.close()
+
+
+def update_run_cancelled(run_id):
+    """Mark a run as 'cancelled' (killed by user)."""
+    conn = get_connection()
+    conn.execute("""
+        UPDATE runs SET status = 'cancelled', completed_at = datetime('now')
+        WHERE id = ? AND status IN ('processing', 'pending')
+    """, (run_id,))
     conn.commit()
     conn.close()
 
@@ -261,11 +323,12 @@ def update_run_completed(run_id, data):
     conn.execute("""
         UPDATE runs SET
             feat_profile = ?, feat_contacts = ?, feat_opportunities = ?,
-            feat_ai_context = ?, feat_ai_context_available = ?,
+            feat_ai_context = ?,
             sec_profiles = ?, sec_contacts = ?,
             section_exec_summary = ?, section_featured = ?,
-            section_secondary = ?, section_cta = ?, section_footer = ?,
-            report_markdown = ?, notion_url = ?,
+            section_secondary = ?, section_cta = ?,
+            report_markdown = ?, validation_result = ?,
+            notion_url = ?,
             status = 'completed', completed_at = datetime('now')
         WHERE id = ?
     """, (
@@ -273,15 +336,14 @@ def update_run_completed(run_id, data):
         json.dumps(data.get("FEAT_CONTACTS")),
         json.dumps(data.get("FEAT_OPPORTUNITIES")),
         data.get("FEAT_AI_CONTEXT"),
-        1 if data.get("FEAT_AI_CONTEXT_AVAILABLE") else 0,
         json.dumps(data.get("SEC_PROFILES")),
         json.dumps(data.get("SEC_CONTACTS")),
         data.get("SECTION_EXEC_SUMMARY"),
         data.get("SECTION_FEATURED"),
         data.get("SECTION_SECONDARY"),
         data.get("SECTION_CTA"),
-        data.get("SECTION_FOOTER"),
         data.get("VALIDATED_REPORT_MARKDOWN") or data.get("REPORT_MARKDOWN"),
+        json.dumps(data.get("VALIDATION_RESULT")),
         data.get("NOTION_PAGE_URL"),
         run_id,
     ))
@@ -294,11 +356,11 @@ def insert_contacts(run_id, buyer_id, contacts):
     for c in (contacts or []):
         conn.execute("""
             INSERT INTO contacts (run_id, buyer_id, contact_name, contact_title,
-                                  contact_email, email_verified, relevance_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                                  contact_email, email_verified)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (
             run_id, buyer_id, c.get("name"), c.get("title"),
-            c.get("email"), 1 if c.get("emailVerified") else 0, 0,
+            c.get("email"), 1 if c.get("emailVerified") else 0,
         ))
     conn.commit()
     conn.close()

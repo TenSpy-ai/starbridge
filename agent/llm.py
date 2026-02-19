@@ -15,8 +15,14 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
+import time
 
-from .config import LLM_MAX_TURNS, LLM_MODEL
+from .config import (
+    LLM_MAX_OUTPUT_TOKENS,
+    LLM_MODEL,
+    LLM_TOOL_TIMEOUT,
+)
 
 logger = logging.getLogger("pipeline.llm")
 
@@ -24,6 +30,13 @@ logger = logging.getLogger("pipeline.llm")
 
 _claude_path = None
 _oauth_token = None
+_cancel_event = None  # threading.Event — set by pipeline to enable kill
+
+
+def set_cancel_event(event):
+    """Register a threading.Event that, when set, kills any running CLI subprocess."""
+    global _cancel_event
+    _cancel_event = event
 
 
 def _init_backend():
@@ -52,48 +65,140 @@ def _init_backend():
     logger.info(f"LLM backend: claude CLI ({path})")
 
 
+def _run_cli(cmd, prompt, env, timeout, label):
+    """Run a CLI command via Popen with cancel-event polling.
+
+    Polls every 0.5s so the process can be killed within ~500ms of
+    _cancel_event being set. Raises PipelineCancelled (imported lazily to
+    avoid circular import) or RuntimeError on timeout/failure.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    proc.stdin.write(prompt)
+    proc.stdin.close()
+
+    deadline = time.time() + timeout
+    while proc.poll() is None:
+        if _cancel_event and _cancel_event.is_set():
+            proc.kill()
+            proc.wait()
+            from .pipeline import PipelineCancelled
+            raise PipelineCancelled("Pipeline killed by user (CLI subprocess terminated)")
+        if time.time() > deadline:
+            proc.kill()
+            proc.wait()
+            raise RuntimeError(f"{label} timed out after {timeout}s")
+        time.sleep(0.5)
+
+    stdout = proc.stdout.read()
+    stderr = proc.stderr.read()
+
+    if proc.returncode != 0:
+        detail = stderr.strip() or stdout.strip()[:500]
+        raise RuntimeError(f"{label} exited {proc.returncode}: {detail}")
+
+    output = stdout.strip()
+    if not output:
+        raise RuntimeError(f"{label} returned empty output")
+
+    return output
+
+
 def _call_llm(system_prompt: str, user_content: str, max_tokens: int = None) -> str:
     """Call Claude via the local CLI. Hard-fails on error.
 
     max_tokens is accepted for interface compatibility but not used by the CLI.
+    Uses Popen with a poll loop so the process can be killed mid-run via _cancel_event.
     """
     _init_backend()
 
-    # Combine system + user into a single prompt for the CLI
     prompt = f"{system_prompt}\n\n---\n\n{user_content}"
 
     env = {
         **os.environ,
         "CLAUDE_CODE_OAUTH_TOKEN": _oauth_token,
-        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(LLM_MAX_OUTPUT_TOKENS),
     }
-    env.pop("CLAUDECODE", None)  # remove to allow nested invocation
+    env.pop("CLAUDECODE", None)
 
-    try:
-        result = subprocess.run(
-            [_claude_path, "-p", "--model", LLM_MODEL, "--max-turns", str(LLM_MAX_TURNS)],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env=env,
-        )
+    return _run_cli(
+        [_claude_path, "-p", "--model", LLM_MODEL],
+        prompt=prompt, env=env, timeout=300, label="claude CLI",
+    )
 
-        if result.returncode != 0:
-            # stderr is often empty — include stdout too for diagnostics
-            detail = result.stderr.strip() or result.stdout.strip()[:500]
-            raise RuntimeError(
-                f"claude CLI exited {result.returncode}: {detail}"
-            )
 
-        output = result.stdout.strip()
-        if not output:
-            raise RuntimeError("claude CLI returned empty output")
+def _build_mcp_config():
+    """Build a temporary MCP config file for Datagen tool access (Notion, etc.).
 
-        return output
+    The Datagen MCP server exposes an `executeTool` meta-tool that calls
+    underlying tools by alias name (e.g. mcp_Notion_notion_create_pages).
+    The CLI connects via Streamable HTTP transport.
 
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("claude CLI timed out after 120s")
+    Returns the temp file path — caller MUST clean up via os.unlink().
+    """
+    api_key = os.environ.get("DATAGEN_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("DATAGEN_API_KEY not set — needed for MCP tool access")
+
+    config = {
+        "mcpServers": {
+            "datagen": {
+                "type": "http",
+                "url": "https://mcp.datagen.dev/mcp",
+                "headers": {"X-API-Key": api_key},
+            }
+        }
+    }
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", prefix="mcp_datagen_", delete=False
+    )
+    json.dump(config, tmp)
+    tmp.close()
+    return tmp.name
+
+
+def _call_llm_with_tools(
+    system_prompt: str,
+    user_content: str,
+    mcp_config_path: str,
+    allowed_tools: list = None,
+    timeout: int = None,
+) -> str:
+    """Call Claude CLI with MCP tool access. Returns final text output.
+
+    Like _call_llm() but adds --mcp-config and --allowedTools for MCP server
+    access. Used by s12 to give the LLM direct Notion access.
+    Uses Popen with a poll loop so the process can be killed mid-run via _cancel_event.
+    """
+    _init_backend()
+
+    prompt = f"{system_prompt}\n\n---\n\n{user_content}"
+    timeout = timeout or LLM_TOOL_TIMEOUT
+
+    env = {
+        **os.environ,
+        "CLAUDE_CODE_OAUTH_TOKEN": _oauth_token,
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(LLM_MAX_OUTPUT_TOKENS),
+    }
+    env.pop("CLAUDECODE", None)
+
+    cmd = [
+        _claude_path,
+        "-p",
+        "--model", LLM_MODEL,
+        "--mcp-config", mcp_config_path,
+    ]
+    if allowed_tools:
+        cmd.extend(["--allowedTools", ",".join(allowed_tools)])
+
+    return _run_cli(cmd, prompt=prompt, env=env, timeout=timeout, label="claude CLI (with tools)")
 
 
 def _extract_json(text):
@@ -124,7 +229,7 @@ def _extract_json(text):
 # ── Sub-agent: Search Strategy Analyst ───────────────────────────────────────
 
 def search_strategy(target_company, target_domain, product_description,
-                    campaign_signal, prior_run_count=0):
+                    prior_runs=None):
     """Analyze vendor/product → SLED segments, keywords, buyer types, opportunity types.
 
     Returns typed keyword lists optimized per opportunity type:
@@ -167,23 +272,39 @@ def search_strategy(target_company, target_domain, product_description,
         "These surface early buying intent before an RFP is issued.\n\n"
         "rfp_keywords (up to 8): Terms that appear in RFP/procurement documents — both specific "
         "product categories and general service descriptions. Include both specific and general "
-        "variations. Focus on terms a procurement officer would use, not marketing language."
+        "variations. Focus on terms a procurement officer would use, not marketing language.\n\n"
+        "If PRIOR RUNS are provided, you MUST diversify — use different keyword angles, "
+        "target different buyer segments, or shift geographic focus. Do NOT repeat the same "
+        "primary_keywords or buyer_types from prior runs unless no alternatives exist."
     )
 
     content = (
         f"Company: {target_company}\n"
         f"Domain: {target_domain}\n"
         f"Product Description: {product_description}\n"
-        f"Campaign Signal: {campaign_signal}\n"
     )
-    if prior_run_count:
-        content += f"\nPrior runs found for this domain: {prior_run_count}"
+    if prior_runs:
+        completed = [r for r in prior_runs if r.get("status") == "completed"]
+        if completed:
+            content += "\n--- PRIOR RUNS FOR THIS DOMAIN ---\n"
+            content += "Diversify your strategy — avoid repeating the same keywords and buyer selections.\n\n"
+            for i, r in enumerate(completed):
+                content += f"Run {i+1} ({r.get('created_at', '?')}):\n"
+                strat = r.get("search_strategy", "")
+                if strat:
+                    content += f"  Strategy: {strat[:500]}\n"
+                if r.get("featured_buyer_name"):
+                    content += f"  Featured: {r['featured_buyer_name']}\n"
+                sec = r.get("secondary_buyers", "")
+                if sec:
+                    content += f"  Secondary: {sec[:300]}\n"
+                content += "\n"
 
     raw = _call_llm(system_prompt, content)
     strategy = _extract_json(raw)
 
     # Ensure required keys with sensible fallbacks
-    fallback_kw = campaign_signal or target_company
+    fallback_kw = target_company
     strategy.setdefault("primary_keywords", [fallback_kw])
     strategy.setdefault("alternate_keywords", [])
     strategy.setdefault("meeting_keywords", [])
@@ -196,54 +317,9 @@ def search_strategy(target_company, target_domain, product_description,
     return strategy
 
 
-# ── Sub-agent: Buyer Profile Summarizer ──────────────────────────────────────
-
-def buyer_profile_summary(buyer_name, buyer_type, profile_json, product_desc):
-    """Synthesize raw buyer profile data into a structured narrative summary.
-
-    Adapted from Starbridge's [ULTRA] Long Organization Description prompt.
-    Returns a sales-focused factual profile suitable for feeding into featured_section().
-    """
-    system_prompt = (
-        "You are a SLED procurement intelligence analyst producing a buyer profile summary.\n\n"
-        "Given raw buyer profile data, produce a structured factual overview of this "
-        "government/education buyer. Use ONLY the data provided — do not use outside knowledge.\n\n"
-        "RULES:\n"
-        "- Tone: neutral, professional, sales enablement style. No superlatives or speculation.\n"
-        "- Use placeholders exactly: 'Not available in profile data' for missing fields.\n"
-        "- Do NOT use 'unknown', 'likely', 'appears to', or other speculative phrasing.\n"
-        "- Valid Markdown only. Use bullets and short paragraphs.\n\n"
-        "OUTPUT SECTIONS (in order, skip any with no data):\n\n"
-        "## [Buyer Name]: [One-line positioning]\n"
-        "One sentence: what this buyer is, where, and what they oversee.\n\n"
-        "## Key Attributes\n"
-        "- Type, state, city, enrollment/population, fiscal year, procurement score\n"
-        "- Website, phone, any other identifiers from the profile\n\n"
-        "## Institutional Mission & Scope\n"
-        "- What this buyer's mandate covers based on type and available data\n"
-        "- Size/scale indicators (enrollment, budget, service area)\n\n"
-        "## Technology & Procurement Context\n"
-        "- Any technology, systems, or procurement patterns visible in the data\n"
-        "- Procurement score interpretation (high = complex/slow, low = streamlined)\n\n"
-        "## Relevance to [Product]\n"
-        "- Why this buyer type typically needs products like the one described\n"
-        "- Which departments or functions would be involved\n\n"
-        "Keep the summary to 150-250 words. Focus on what a BDR needs to know before a call."
-    )
-
-    content = (
-        f"BUYER: {buyer_name}\n"
-        f"BUYER TYPE: {buyer_type}\n"
-        f"PROSPECT PRODUCT: {product_desc}\n\n"
-        f"RAW PROFILE DATA:\n{profile_json}\n"
-    )
-
-    return _call_llm(system_prompt, content)
-
-
 # ── Sub-agent: Featured Buyer Report Writer ─────────────────────────────────
 
-def featured_section(buyer_name, buyer_type, product, product_desc, campaign_signal,
+def featured_section(buyer_name, buyer_type, product, product_desc,
                      profile_json, contacts_json, opps_json, ai_context=None):
     """Generate the featured buyer deep-dive section."""
     system_prompt = (
@@ -278,8 +354,7 @@ def featured_section(buyer_name, buyer_type, product, product_desc, campaign_sig
 
     content = (
         f"PROSPECT PRODUCT: {product}\n"
-        f"PRODUCT DESCRIPTION: {product_desc}\n"
-        f"CAMPAIGN SIGNAL: {campaign_signal}\n\n"
+        f"PRODUCT DESCRIPTION: {product_desc}\n\n"
         f"BUYER: {buyer_name}\n"
         f"BUYER TYPE: {buyer_type}\n\n"
         f"BUYER PROFILE:\n{profile_json}\n\n"
@@ -312,25 +387,206 @@ def secondary_cards(product, product_desc, buyers_content):
     return _call_llm(system_prompt, content)
 
 
-# ── Sub-agent: Fact Checker ─────────────────────────────────────────────────
+# ── Sub-agent: Report Shaper + Notion Publisher (s12) ─────────────────────
 
-def fact_check(buyer_name, report_text, source_data):
-    """Check report for hallucinations against source data. Returns (passed, detail)."""
+def shape_and_publish_report(
+    target_company, product_description,
+    buyer_name, buyer_type,
+    section_featured, section_secondary,
+    section_exec_summary, section_cta,
+    notion_parent_page_id,
+):
+    """Assemble intel report from pre-generated sections AND publish to Notion.
+
+    The LLM has direct MCP tool access via the Datagen server. It:
+    1. Assembles the report from sections produced by specialized sub-agents
+    2. Publishes to Notion via the executeTool MCP tool
+    3. Returns both the markdown and the Notion page URL
+
+    Sections come from: s8 (exec summary), s9 (featured buyer), s10 (secondary
+    cards), s11 (CTA template). Raw data generation happened upstream — this
+    step only combines and publishes.
+
+    Returns: (report_markdown: str, notion_url: str)
+    Raises on failure — no fallback, pipeline hard-fails.
+    """
     system_prompt = (
-        "You are a fact-checker. Compare this intelligence report against the source data.\n\n"
-        "CHECK FOR material errors ONLY:\n"
-        "- Contact names or emails that do NOT appear in the CONTACTS data\n"
-        "- Buyer attributes (location, enrollment, scores) that contradict PROFILE data\n"
-        "- Initiative names or dollar amounts NOT found in OPPORTUNITIES or AI CONTEXT\n\n"
-        "IGNORE these (they are correct):\n"
-        "- ALL dates including the generation date and opportunity dates\n"
-        "- Aggregate counts (total signals, total buyers) — sourced separately\n"
-        "- Formatting, style, section structure\n"
-        "- Any information from the AI CONTEXT section (it's a trusted source)\n\n"
-        "Respond with ONLY: PASS or FAIL followed by a numbered list of material factual errors."
+        "You are assembling a final SLED intelligence report from pre-generated "
+        "sections and publishing it to Notion.\n\n"
+
+        "═══ YOUR ROLE ═══\n\n"
+
+        "You are an ASSEMBLER. Specialized sub-agents have already generated each "
+        "section from raw source data. Your job is to combine them into a single, "
+        "cohesive report and publish it.\n\n"
+
+        "YOU MUST:\n"
+        "1. Add the report title header: # \U0001f4ca [Buyer Name] — Intelligence Report for [Product]\n"
+        "2. Include the FEATURED BUYER SECTION as-is\n"
+        "3. Include the ADDITIONAL BUYERS SECTION as-is (OMIT if empty or 'No secondary buyers')\n"
+        "4. Include the EXEC SUMMARY SECTION as-is\n"
+        "5. Include the CTA SECTION as-is\n"
+        "6. Add horizontal rules (---) between major sections\n"
+        "7. Add the footer: *Generated Starbridge Intelligence [Current Month Year]*\n"
+        "   followed by: *Data source: Starbridge buyer profile, contacts, and opportunity database*\n"
+        "8. Publish the assembled report to Notion\n\n"
+
+        "YOU MUST NOT:\n"
+        "- Add facts, names, numbers, dates, or analysis not already in the sections\n"
+        "- Remove or significantly alter content from the provided sections\n"
+        "- Re-generate sections from scratch — use them as provided\n\n"
+
+        "═══ SECTION ORDER ═══\n\n"
+
+        "1. Title header\n"
+        "2. Featured Buyer Section (buyer snapshot, signals, contacts, analysis)\n"
+        "3. Additional Buyers Section (secondary buyer cards) — omit if none\n"
+        "4. Exec Summary Section\n"
+        "5. CTA Section\n"
+        "6. Footer\n\n"
+
+        "═══ NOTION PUBLISHING ═══\n\n"
+
+        "After assembling the report markdown above, you MUST publish it to Notion.\n\n"
+        "Use the `executeTool` MCP tool with these parameters:\n"
+        "  tool_alias_name: \"mcp_Notion_notion_create_pages\"\n"
+        "  parameters: {\n"
+        "    \"parent\": {\"page_id\": \"" + notion_parent_page_id + "\"},\n"
+        "    \"pages\": [{\n"
+        "      \"properties\": {\"title\": \"[Buyer Name] — Intelligence Report for [Product]\"},\n"
+        "      \"content\": \"[THE FULL ASSEMBLED REPORT MARKDOWN]\"\n"
+        "    }]\n"
+        "  }\n\n"
+
+        "═══ FINAL OUTPUT FORMAT ═══\n\n"
+
+        "After publishing to Notion, output your response in EXACTLY this format:\n"
+        "1. The complete report markdown (same content you published)\n"
+        "2. A delimiter line: ---NOTION_URL---\n"
+        "3. The Notion page URL from the tool result on its own line\n\n"
+        "If the Notion tool fails, still output the report markdown but put "
+        "PUBLISH_FAILED after the delimiter.\n\n"
+
+        "OUTPUT: The report markdown + delimiter + URL. No meta-commentary."
     )
 
-    result = _call_llm(system_prompt, source_data, max_tokens=1024)
+    content = (
+        f"TARGET COMPANY: {target_company}\n"
+        f"PRODUCT DESCRIPTION: {product_description}\n\n"
+        f"FEATURED BUYER: {buyer_name}\n"
+        f"BUYER TYPE: {buyer_type}\n\n"
+        f"--- FEATURED BUYER SECTION (generated by specialized sub-agent) ---\n"
+        f"{section_featured}\n\n"
+        f"--- ADDITIONAL BUYERS SECTION (generated by specialized sub-agent) ---\n"
+        f"{section_secondary or 'No secondary buyers.'}\n\n"
+        f"--- EXEC SUMMARY SECTION (generated by specialized sub-agent) ---\n"
+        f"{section_exec_summary}\n\n"
+        f"--- CTA SECTION (generated by template) ---\n"
+        f"{section_cta}\n"
+    )
+
+    mcp_config = _build_mcp_config()
+
+    try:
+        # The Datagen MCP server exposes executeTool which calls underlying tools.
+        # We allow executeTool so the LLM can publish to Notion.
+        allowed_tools = ["mcp__datagen__executeTool"]
+
+        output = _call_llm_with_tools(
+            system_prompt, content,
+            mcp_config_path=mcp_config,
+            allowed_tools=allowed_tools,
+        )
+
+        # Parse output — split on delimiter
+        if "---NOTION_URL---" in output:
+            parts = output.split("---NOTION_URL---", 1)
+            report_md = parts[0].strip()
+            url_part = parts[1].strip()
+
+            if "PUBLISH_FAILED" in url_part:
+                raise RuntimeError("LLM reported Notion publish failed")
+
+            notion_url = url_part.split("\n")[0].strip()
+        else:
+            # LLM didn't follow delimiter — try to extract URL from output
+            report_md = output
+            url_match = re.search(
+                r"https://(?:www\.)?notion\.(?:so|site)/\S+", output
+            )
+            notion_url = url_match.group(0) if url_match else None
+
+        if not notion_url or not notion_url.startswith("http"):
+            raise RuntimeError(
+                f"Notion URL not found in LLM output (output length: {len(output)})"
+            )
+
+        return report_md, notion_url
+
+    finally:
+        try:
+            os.unlink(mcp_config)
+        except OSError:
+            pass
+
+
+# ── Sub-agent: Fact Checker ─────────────────────────────────────────────────
+
+def fix_report(buyer_name, report_markdown, issues, warnings):
+    """Fix a report based on validation findings. Returns corrected markdown.
+
+    Called by s13 when validation finds issues or warnings. The LLM gets the
+    original report + the specific problems and must return ONLY the corrected
+    report markdown — no commentary, no delimiters, no explanation.
+    """
+    system_prompt = (
+        "You are a report editor fixing issues in a SLED intelligence report.\n\n"
+        "You will receive the original report markdown and a list of issues/warnings found by validation.\n\n"
+        "YOUR TASK:\n"
+        "- Fix every issue listed (these are blocking problems)\n"
+        "- Fix every warning listed (these are quality problems)\n"
+        "- Preserve ALL other content exactly as-is — do not rewrite, restyle, or reorganize\n"
+        "- If an issue mentions truncated/incomplete text, remove the broken fragment rather than guessing content\n"
+        "- If an issue mentions naming contradictions, pick the more specific/correct name and use it consistently\n"
+        "- If an issue mentions missing content (e.g. buyer name not in header), add it\n\n"
+        "OUTPUT:\n"
+        "Return ONLY the corrected report markdown. No commentary, no explanation, no delimiters.\n"
+        "The output must be the complete report — not a diff or partial update."
+    )
+
+    findings = ""
+    if issues:
+        findings += "BLOCKING ISSUES:\n" + "\n".join(f"- {i}" for i in issues) + "\n\n"
+    if warnings:
+        findings += "WARNINGS:\n" + "\n".join(f"- {w}" for w in warnings) + "\n\n"
+
+    content = (
+        f"BUYER: {buyer_name}\n\n"
+        f"VALIDATION FINDINGS:\n{findings}\n"
+        f"ORIGINAL REPORT:\n{report_markdown}"
+    )
+
+    return _call_llm(system_prompt, content)
+
+
+def fact_check(buyer_name, report_text):
+    """Check report for internal consistency. Returns (passed, detail)."""
+    system_prompt = (
+        "You are a fact-checker reviewing a SLED intelligence report for internal consistency.\n\n"
+        "CHECK FOR:\n"
+        "- Contradictions within the report (e.g. buyer name differs between sections)\n"
+        "- Claims that appear fabricated (generic statements with no specifics)\n"
+        "- Contact information that looks malformed or placeholder-like\n"
+        "- Sections that reference data not present elsewhere in the report\n\n"
+        "IGNORE these (they are correct):\n"
+        "- ALL dates including the generation date and opportunity dates\n"
+        "- Aggregate counts (total signals, total buyers)\n"
+        "- Formatting, style, section structure\n\n"
+        "Respond with ONLY: PASS or FAIL followed by a numbered list of issues found."
+    )
+
+    content = f"BUYER: {buyer_name}\n\nREPORT TO CHECK:\n{report_text[:4000]}"
+    result = _call_llm(system_prompt, content, max_tokens=1024)
 
     if isinstance(result, str) and "FAIL" in result.upper():
         return False, result[:500]

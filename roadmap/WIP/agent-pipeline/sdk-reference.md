@@ -98,8 +98,7 @@ STEP_TIMEOUTS = {
     "s11": 15,
 }
 
-# If s6's buyer_chat times out, proceed with partial data:
-# FEAT_AI_CONTEXT = null, FEAT_AI_CONTEXT_AVAILABLE = false
+# If s6's buyer_chat times out, pipeline hard-fails (no partial data).
 ```
 
 ## Tool Implementation
@@ -144,7 +143,7 @@ async def inject_timeout_context(input_data, tool_use_id, context):
     tool = input_data["tool_name"]
     if tool == "starbridge_buyer_chat":
         return {
-            "additionalContext": "This call may take 10-30s. If timeout, set FEAT_AI_CONTEXT=null and FEAT_AI_CONTEXT_AVAILABLE=false."
+            "additionalContext": "This call may take 10-30s. If timeout, pipeline hard-fails."
         }
     return {}
 ```
